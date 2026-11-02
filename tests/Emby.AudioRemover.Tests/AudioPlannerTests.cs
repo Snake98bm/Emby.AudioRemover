@@ -302,6 +302,35 @@ public class AudioPlannerTests
         return settings;
     }
 
+    [Fact]
+    public void Text_added_from_the_suggestions_gets_its_videos_a_rewrite_of_their_own()
+    {
+        var settings = CleanTitles(words: "GRP", rewrite: false);
+        settings.CleanAdded = new TitleCleaner("GRP");
+
+        var added = AudioPlanner.Plan(Movie(Audio(1, "eng", isDefault: true, title: "English - GRP")), settings, Video);
+        Assert.True(added.HasWork);
+        Assert.Equal(new Dictionary<int, string> { [1] = "English" }, added.StreamTitles());
+
+        // Only text the list had before: it still waits for a rewrite for the audio.
+        var other = AudioPlanner.Plan(Movie(Audio(1, "eng", isDefault: true, title: "English - SomeSite.com")), settings, Video);
+        Assert.False(other.HasWork);
+        Assert.NotEmpty(other.TitlesLeft);
+    }
+
+    [Fact]
+    public void Only_added_text_still_on_the_list_counts_and_only_when_switched_on()
+    {
+        Assert.True(new PluginOptions().CleanWhereSuggested);
+        Assert.True(new PluginOptions().SuggestDuringRuns);
+
+        var options = new PluginOptions { CleanTitles = true, TitleAds = "*.com\nGRP", AddedFromSuggestions = "GRP\nTAKEN-OFF" };
+        Assert.Equal("GRP", MediaProcessor.AddedCleaner(options)!.Signature);
+
+        options.CleanWhereSuggested = false;
+        Assert.Null(MediaProcessor.AddedCleaner(options));
+    }
+
     // The file, the video track and the subtitle get an ad too.
     private static ProbeResult WithAds(ProbeResult probe)
     {

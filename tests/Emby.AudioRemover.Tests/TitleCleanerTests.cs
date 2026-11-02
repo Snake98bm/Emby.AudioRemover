@@ -71,6 +71,20 @@ public class TitleCleanerTests
     }
 
     [Fact]
+    public void An_underscore_is_a_gap_between_words_and_a_space_in_an_entry_matches_any_gap()
+    {
+        var tag = new TitleCleaner("TAG");
+        Assert.Equal("English 5.1 - SITE", tag.Clean("English 5.1 - SITE_TAG"));
+        Assert.Equal("English 5.1 - SITE", tag.Clean("English 5.1 - SITE TAG"));
+        Assert.Equal("English TAGGED", tag.Clean("English TAGGED"));
+
+        var both = new TitleCleaner("SITE TAG");
+        foreach (var title in new[] { "English 5.1 - SITE TAG", "English 5.1 - SITE_TAG", "English 5.1 - SITE.TAG", "English 5.1 - SITE-TAG" })
+            Assert.Equal("English 5.1", both.Clean(title));
+        Assert.Equal("English SITETAG", both.Clean("English SITETAG"));
+    }
+
+    [Fact]
     public void Website_endings_come_from_the_list()
     {
         var onlyCom = new TitleCleaner("*.com");

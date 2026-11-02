@@ -45,6 +45,7 @@ namespace Emby.AudioRemover
             _logDirectory = applicationHost.Resolve<IApplicationPaths>().LogDirectoryPath;
             _state = new StateStore(applicationHost.Resolve<IApplicationPaths>().PluginConfigurationsPath, applicationHost.Resolve<IJsonSerializer>());
             Whisper = new WhisperInstall(Path.Combine(applicationHost.Resolve<IApplicationPaths>().PluginConfigurationsPath, "AudioRemover-whisper"));
+            SuggestionStore = new SuggestionStore(applicationHost.Resolve<IApplicationPaths>().PluginConfigurationsPath, applicationHost.Resolve<IJsonSerializer>());
             _pages = new List<IPluginUIPageController>
             {
                 SettingsPageController.ForPluginList(this, Name),
@@ -61,9 +62,13 @@ namespace Emby.AudioRemover
         /// <summary>The last "Find text to remove".</summary>
         internal TitleSuggestionSearch Suggestions { get; } = new TitleSuggestionSearch();
 
+        /// <summary>What "Suggested text" builds up from, across runs and searches.</summary>
+        internal SuggestionStore SuggestionStore { get; }
+
         internal const string SuggestionsCaption = "Find text to remove";
 
-        // Runs on after the click: reading every video's track names from Emby's database takes a few seconds.
+        // Runs on after the click: reading every video's track names from Emby's database takes a few seconds. What it finds
+        // joins what runs found, in "Suggested text".
         internal void StartFindingSuggestions(PluginOptions options)
         {
             if (!Suggestions.TryStart()) return;
@@ -74,7 +79,8 @@ namespace Emby.AudioRemover
                 try
                 {
                     var names = TrackNames(libraries, out var videos);
-                    Suggestions.Finish(TitleSuggestions.Find(names, new TitleCleaner(list)), videos);
+                    SuggestionStore.Update(data => TitleSuggestions.Merge(data, names, new TitleCleaner(list)));
+                    Suggestions.Finish(videos);
                 }
                 catch (Exception ex)
                 {
@@ -109,31 +115,70 @@ namespace Emby.AudioRemover
                 return new StatusItem(SuggestionsCaption, "Looking through the track names Emby has for your libraries… Reopen this page in a moment.", ItemStatus.InProgress);
             if (search.Problem != null)
                 return new StatusItem(SuggestionsCaption, "Couldn't look through the track names: " + search.Problem, ItemStatus.Failed);
-            var found = search.Found;
-            if (found == null)
+            if (search.VideosLookedAt != null)
                 return new StatusItem(SuggestionsCaption,
-                    "Looks through your libraries' track names for text that keeps turning up across different films and shows but isn't on the list yet.",
-                    ItemStatus.None);
-            if (found.Count == 0)
-                return new StatusItem(SuggestionsCaption, $"Nothing new in {search.VideosLookedAt} videos' track names: the list already covers it.", ItemStatus.Succeeded);
+                    $"Looked through {search.VideosLookedAt} videos' track names; what keeps turning up is in 'Suggested text' below.", ItemStatus.Succeeded);
             return new StatusItem(SuggestionsCaption,
-                $"{found.Count} suggestion{(found.Count == 1 ? "" : "s")} from {search.VideosLookedAt} videos' track names. Switch on the ones to add, then " +
-                "click 'Add selected to the list'. Each one passed the same checks as the box.", ItemStatus.Succeeded);
+                "Looks through your libraries' track names for text that keeps turning up across different films and shows but isn't " +
+                "on the list yet, and puts it in 'Suggested text' below. Runs add to it too.",
+                ItemStatus.None);
         }
 
-        internal static GenericItemList SuggestionItemsFor(IList<TitleSuggestion> found, Func<int, bool> isSelected) =>
-            new GenericItemList(found.Select((s, i) => new GenericListItem
+        /// <summary>Fills "Suggested text" with what's waiting and what was typed there, and where each suggestion was found.</summary>
+        internal void ShowSuggestions(PluginOptions options)
+        {
+            var data = SuggestionStore.Read();
+            var waiting = TitleSuggestions.Waiting(data, new TitleCleaner(options.TitleAds));
+            options.SuggestedText = TitleSuggestions.BoxText(data, waiting);
+            options.SuggestedTextShown = options.SuggestedText;
+            options.SuggestionPlaces = SuggestionPlacesFor(waiting);
+            options.SuggestionsListed = waiting.Count > 0 ? "yes" : null;
+        }
+
+        internal static GenericItemList SuggestionPlacesFor(IEnumerable<TitleSuggestion> waiting) =>
+            new GenericItemList(waiting.Select(s => new GenericListItem
             {
                 IconMode = ItemListIconMode.NoIcons,
                 PrimaryText = s.Entry,
-                SecondaryText = $"In {s.Videos} films or shows, e.g. {s.Example}",
-                Toggle = new ToggleButtonItem
-                {
-                    IsChecked = isSelected(i),
-                    Caption = "Add",
-                    CommandId = SettingsPageView.SuggestionToggleCommandPrefix + i.ToString(CultureInfo.InvariantCulture)
-                }
+                SecondaryText = $"In {(s.Videos >= TitleSuggestions.MostNamesKept ? TitleSuggestions.MostNamesKept + "+" : s.Videos.ToString(CultureInfo.InvariantCulture))} " +
+                                $"films or shows: {string.Join(", ", s.VideoNames.Take(10))}{(s.VideoNames.Count > 10 ? $" and {s.VideoNames.Count - 10} more" : "")}"
             }));
+
+        /// <summary>Keeps what was done in "Suggested text" before the page is saved: lines taken out, typed or changed.</summary>
+        internal void KeepSuggestionEdits(PluginOptions options)
+        {
+            if (options.SuggestedText == null && options.SuggestedTextShown == null) return;
+            var shown = options.SuggestedTextShown;
+            var now = options.SuggestedText;
+            SuggestionStore.Update(data => TitleSuggestions.KeepEdits(data, shown, now));
+            options.SuggestedTextShown = now;
+        }
+
+        internal StatusItem AddSuggestedText(PluginOptions options) => AddSuggestedText(options, SuggestionStore);
+
+        /// <summary>"Add to the list": every line in the box that passes the list's checks goes on the list; the rest stay.</summary>
+        internal static StatusItem AddSuggestedText(PluginOptions options, SuggestionStore store)
+        {
+            var lines = TitleSuggestions.Lines(options.SuggestedText);
+            if (lines.Count == 0)
+                return new StatusItem(SuggestionsCaption, "Nothing to add: 'Suggested text' is empty.", ItemStatus.Warning);
+
+            var refused = lines.Select(l => (Line: l, Problems: new TitleCleaner(l).Problems)).Where(r => r.Problems.Count > 0).ToList();
+            var added = lines.Where(l => refused.All(r => r.Line != l)).ToList();
+            if (added.Count > 0)
+            {
+                options.TitleAds = WithEntries(options.TitleAds, added);
+                options.AddedFromSuggestions = string.Join("\n", TitleSuggestions.Lines(options.AddedFromSuggestions + "\n" + string.Join("\n", added)));
+                store.Update(data => TitleSuggestions.Added(data, added));
+            }
+
+            var text = added.Count > 0
+                ? $"Added to the list: {string.Join(", ", added)}. " +
+                  (options.CleanWhereSuggested ? "The next run cleans them out of the names they're in; test mode shows what it would change." : "Runs use them from now on.")
+                : "Nothing added.";
+            if (refused.Count > 0) text += " Left in the box: " + string.Join("; ", refused.SelectMany(r => r.Problems)) + ".";
+            return new StatusItem(SuggestionsCaption, text, refused.Count > 0 ? ItemStatus.Warning : ItemStatus.Succeeded);
+        }
 
         /// <summary>
         /// The list with the picked entries added, each once, and sorted so it stays easy to read: website endings, then
@@ -209,26 +254,32 @@ namespace Emby.AudioRemover
         // AudioRemover update, after they've been tried, with their own checksums.
         internal static string NewerWhisper(WhisperInstall whisper, WhisperModelInfo model, WhisperModelInfo checkModel = null)
         {
-            var news = new List<string>();
+            var models = new[] { model, checkModel }.Where(m => m != null).ToList();
+            var changed = models.Where(m => whisper.ModelUnchanged(m.Name) == false).ToList();
+            var current = models.Where(m => whisper.ModelUnchanged(m.Name) == true).ToList();
             var program = whisper.LatestVersion;
-            if (program != null)
-                news.Add(WhisperInstall.IsNewer(program, WhisperFiles.ProgramVersion)
-                    ? $"whisper.cpp v{program} is out"
-                    : "that's the newest whisper.cpp");
-            var anyChanged = false;
-            foreach (var m in new[] { model, checkModel }.Where(m => m != null))
-            {
-                var unchanged = whisper.ModelUnchanged(m.Name);
-                if (unchanged == null) continue;
-                news.Add(unchanged.Value ? $"the {m.Name} model hasn't changed" : $"the {m.Name} model file on Hugging Face has changed");
-                anyChanged |= unchanged == false;
-            }
-            if (news.Count == 0) return "";
+            if (program == null && changed.Count == 0 && current.Count == 0) return "";
 
-            var anyNewer = (program != null && WhisperInstall.IsNewer(program, WhisperFiles.ProgramVersion)) || anyChanged;
-            return " Latest check: " + string.Join(", and ", news) + "." +
-                   (anyNewer ? " AudioRemover moves to newer files in one of its own updates, after trying them." : "");
+            var programNewer = program != null && WhisperInstall.IsNewer(program, WhisperFiles.ProgramVersion);
+            var on = whisper.AnsweredUtc?.ToLocalTime().ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            var latest = " Latest check" + (on != null ? $" ({on})" : "") + ": ";
+
+            // Every answer is in and nothing is newer. Only said of a whisper.cpp AudioRemover downloaded itself: one put
+            // there by hand could be any build.
+            if (program != null && !programNewer && current.Count == models.Count && whisper.InstalledVersion == WhisperFiles.ProgramVersion)
+                return latest + $"you have the current version of all files: whisper.cpp v{WhisperFiles.ProgramVersion} and {Models(models, " model", " models")}.";
+
+            var news = new List<string>();
+            if (program != null) news.Add(programNewer ? $"whisper.cpp v{program} is out" : "that's the newest whisper.cpp");
+            if (changed.Count > 0) news.Add(Models(changed, " model file on Hugging Face has changed", " model files on Hugging Face have changed"));
+            if (current.Count > 0) news.Add(Models(current, " model is current", " models are current"));
+            return latest + string.Join("; ", news) + "." +
+                   (programNewer || changed.Count > 0 ? " AudioRemover moves to newer files in one of its own updates, after trying them." : "");
         }
+
+        // "the Base model is current", "the Base and Small models are current".
+        private static string Models(IList<WhisperModelInfo> models, string one, string several) =>
+            "the " + string.Join(" and ", models.Select(m => m.Name)) + (models.Count > 1 ? several : one);
 
         // The settings file keeps the name earlier versions used, so saved settings carry over after the rename.
         private const string SettingsFileName = "AudioRemover";
@@ -437,9 +488,7 @@ namespace Emby.AudioRemover
             options.RestoreStatus = BackupCount();
             options.TitleAdsStatus = CheckTitleAds(options.TitleAds, options.TitleAdsSample);
             options.SuggestionsStatus = SuggestionsStatus();
-            var suggestions = Suggestions.Found;
-            options.SuggestionItems = suggestions != null && suggestions.Count > 0 ? SuggestionItemsFor(suggestions, Suggestions.IsSelected) : new GenericItemList();
-            options.SuggestionsShown = suggestions != null && suggestions.Count > 0 ? "yes" : null;
+            ShowSuggestions(options);
             options.WhisperModelChoices = WhisperFiles.All.Select(m => new EditorSelectOption { Value = m.Name, Name = m.Label, IsEnabled = true }).ToList();
             if (options.Listen)
             {

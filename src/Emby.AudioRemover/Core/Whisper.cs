@@ -194,12 +194,16 @@ namespace Emby.AudioRemover.Core
         /// <summary>The newest whisper.cpp version on GitHub, once checked; null before that or when the check failed.</summary>
         public string LatestVersion { get; internal set; }
 
+        /// <summary>When GitHub or Hugging Face last answered a check; null before either has.</summary>
+        public DateTime? AnsweredUtc { get; internal set; }
+
         internal void RecordModelCheck(string model, bool unchanged)
         {
             lock (_modelUnchanged)
             {
                 _modelUnchanged[WhisperFiles.Model(model).Name] = unchanged;
             }
+            AnsweredUtc = DateTime.UtcNow;
         }
 
         private DateTime _checkedUtc = DateTime.MinValue;
@@ -282,6 +286,7 @@ namespace Emby.AudioRemover.Core
                     {
                         if (!response.IsSuccessStatusCode) return;
                         LatestVersion = ReleaseVersion(await response.Content.ReadAsStringAsync().ConfigureAwait(false));
+                        AnsweredUtc = DateTime.UtcNow;
                     }
                 }
             }

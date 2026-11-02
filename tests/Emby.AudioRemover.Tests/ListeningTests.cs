@@ -559,18 +559,35 @@ public sealed class ListeningTests : IDisposable
     [Fact]
     public void The_latest_check_says_whether_anything_newer_is_out()
     {
-        var whisper = new WhisperInstall(_dir);
-        var model = WhisperFiles.Model("Base");
+        var whisper = new WhisperInstall(FakeInstall("checked", WhisperFiles.ProgramVersion, WhisperFiles.Model("Base").File.Sha256));
+        var (model, check) = (WhisperFiles.Model("Base"), WhisperFiles.Model("Small"));
         Assert.Equal("", Plugin.NewerWhisper(whisper, model));
 
         whisper.LatestVersion = WhisperFiles.ProgramVersion;
         whisper.RecordModelCheck("Base", unchanged: true);
-        Assert.Equal(" Latest check: that's the newest whisper.cpp, and the Base model hasn't changed.", Plugin.NewerWhisper(whisper, model));
+        Assert.Equal(DateTime.UtcNow.Date, whisper.AnsweredUtc?.Date);
+        whisper.AnsweredUtc = new DateTime(2026, 11, 2, 12, 0, 0, DateTimeKind.Utc);
+        var on = whisper.AnsweredUtc.Value.ToLocalTime().ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        Assert.Equal($" Latest check ({on}): you have the current version of all files: whisper.cpp v1.9.5 and the Base model.",
+            Plugin.NewerWhisper(whisper, model));
+
+        // The check model's answer isn't in yet: each file is listed instead.
+        Assert.Equal($" Latest check ({on}): that's the newest whisper.cpp; the Base model is current.", Plugin.NewerWhisper(whisper, model, check));
+        whisper.RecordModelCheck("Small", unchanged: true);
+        whisper.AnsweredUtc = new DateTime(2026, 11, 2, 12, 0, 0, DateTimeKind.Utc);
+        Assert.Equal($" Latest check ({on}): you have the current version of all files: whisper.cpp v1.9.5 and the Base and Small models.",
+            Plugin.NewerWhisper(whisper, model, check));
 
         whisper.LatestVersion = "9.0.0";
         whisper.RecordModelCheck("Base", unchanged: false);
-        Assert.Equal(" Latest check: whisper.cpp v9.0.0 is out, and the Base model file on Hugging Face has changed. " +
-                     "AudioRemover moves to newer files in one of its own updates, after trying them.", Plugin.NewerWhisper(whisper, model));
+        whisper.AnsweredUtc = new DateTime(2026, 11, 2, 12, 0, 0, DateTimeKind.Utc);
+        Assert.Equal($" Latest check ({on}): whisper.cpp v9.0.0 is out; the Base model file on Hugging Face has changed; the Small model is current. " +
+                     "AudioRemover moves to newer files in one of its own updates, after trying them.", Plugin.NewerWhisper(whisper, model, check));
+
+        // whisper-cli put there by hand could be any build, so it's never called current.
+        var byHand = new WhisperInstall(FakeInstall("checked-by-hand", null, null)) { LatestVersion = WhisperFiles.ProgramVersion };
+        byHand.RecordModelCheck("Base", unchanged: true);
+        Assert.EndsWith(": that's the newest whisper.cpp; the Base model is current.", Plugin.NewerWhisper(byHand, model));
     }
 
     [Fact]

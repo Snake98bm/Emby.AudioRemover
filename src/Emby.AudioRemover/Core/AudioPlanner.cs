@@ -30,6 +30,12 @@ namespace Emby.AudioRemover.Core
 
         public TitleCleaner Titles { get; set; } = TitleCleaner.Default;
 
+        /// <summary>
+        /// Entries added from the suggestions: names with any of them get a rewrite of their own, even with
+        /// <see cref="RewriteForTitles"/> off. Null when there are none or it's switched off.
+        /// </summary>
+        public TitleCleaner CleanAdded { get; set; }
+
         /// <summary>A track's language is what Whisper heard, when it's sure, rather than its tag.</summary>
         public bool UseHeardLanguages { get; set; }
 
@@ -52,7 +58,7 @@ namespace Emby.AudioRemover.Core
         public string Signature() => string.Join("|",
             string.Join(",", KeepLanguages.OrderBy(l => l, StringComparer.OrdinalIgnoreCase)),
             KeepUndefined, KeepFirstTrack, RemoveCommentary, RemoveAudioDescription, SetDefault, DefaultLanguage, BestAudioDefault,
-            CleanTitles, CleanFileTitle, RewriteForTitles, Titles.Signature, UseHeardLanguages, UseHeardLanguages && DoubleCheckHeard,
+            CleanTitles, CleanFileTitle, RewriteForTitles, Titles.Signature, CleanAdded?.Signature, UseHeardLanguages, UseHeardLanguages && DoubleCheckHeard,
             RetagLoneTrack, RetagLoneTrack && DoubleCheckHeard, TagUntaggedTracks, TagUntaggedTracks && DoubleCheckHeard);
     }
 
@@ -151,8 +157,10 @@ namespace Emby.AudioRemover.Core
                 ? TitleChangesFor(probe, plan.Remove, settings.Titles, settings.CleanFileTitle)
                 : new List<TitleChange>();
 
-            // Decided before the default, so a video rewritten for its track names gets its default tidied for free.
-            var rewriteForTitles = settings.RewriteForTitles && titles.Count > 0;
+            // Decided before the default, so a video rewritten for its track names gets its default tidied for free. Text added
+            // from the suggestions is reason enough by itself: only those videos, not every one with something to clean.
+            var rewriteForTitles = titles.Count > 0 && (settings.RewriteForTitles
+                || (settings.CleanAdded != null && TitleChangesFor(probe, plan.Remove, settings.CleanAdded, settings.CleanFileTitle).Count > 0));
             var tagsUntagged = settings.TagUntaggedTracks && canFlag && HasOnlyUntaggedTracks(probe);
             if (chosen && settings.SetDefault && canFlag)
                 plan.NewDefault = ChooseDefault(audio, plan.Keep, plan.Remove.Count > 0 || rewriteForTitles, settings, tagsUntagged);

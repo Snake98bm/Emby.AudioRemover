@@ -195,16 +195,29 @@ namespace Emby.AudioRemover.ScheduledTasks
             progress.Report(100);
             runLog.Summary("AudioRemover finished: {0} changed, {1} would change (test mode), {2} nothing to do, {3} already done, {4} failed. Details: {5}",
                 counts[Outcome.Changed], counts[Outcome.WouldChange], counts[Outcome.NothingToDo], counts[Outcome.AlreadyDone], counts[Outcome.Failed], runLog.FileName);
-            _log.Info(processor.Totals.Describe(options.DryRun));
-
             if (options.CleanTitles)
             {
-                var missed = TitleSuggestions.Find(processor.TrackNames, new TitleCleaner(options.TitleAds));
-                // One pre-built string: names may contain braces.
-                if (missed.Count > 0)
-                    _log.Info("AudioRemover: text in track names the 'Text to remove' list misses (in 2+ films or shows): " +
-                              string.Join(", ", missed.Take(10).Select(s => $"{s.Entry} ({s.Videos})")) + (missed.Count > 10 ? ", ..." : "") +
-                              " - add them with 'Find text to remove' on the settings page");
+                // Above the totals, so they stay the log's last lines. One pre-built string: names may contain braces.
+                var current = new TitleCleaner(options.TitleAds);
+                // Lines deleted from "Suggested text" (or added from it) aren't suggested here either.
+                var dismissed = new HashSet<string>(Plugin.Instance?.SuggestionStore.Read().Dismissed ?? new List<string>(), StringComparer.OrdinalIgnoreCase);
+                var missed = TitleSuggestions.Find(processor.TrackNames, current).Where(s => !dismissed.Contains(s.Entry)).ToList();
+                if (missed.Count > 0) _log.Info("AudioRemover: " + TitleSuggestions.Describe(missed));
+                if (options.SuggestDuringRuns) KeepSuggestions(processor.TrackNames, current);
+            }
+            _log.Info(processor.Totals.Describe(options.DryRun));
+        }
+
+        // Built up across runs for "Suggested text" on the settings page. Only suggestions: a problem never fails the run.
+        private void KeepSuggestions(List<(string Video, string Title)> names, TitleCleaner current)
+        {
+            try
+            {
+                Plugin.Instance?.SuggestionStore.Update(data => TitleSuggestions.Merge(data, names, current));
+            }
+            catch (Exception ex)
+            {
+                _log.Warn("AudioRemover: couldn't keep this run's suggestions for the settings page: " + ex.Message);
             }
         }
 

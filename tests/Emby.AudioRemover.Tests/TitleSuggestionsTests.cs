@@ -3,8 +3,12 @@ using Xunit;
 
 namespace Emby.AudioRemover.Tests;
 
-public class TitleSuggestionsTests
+public sealed class TitleSuggestionsTests : IDisposable
 {
+    private readonly string _dir = Directory.CreateTempSubdirectory("audioremover-suggest-").FullName;
+
+    public void Dispose() => Directory.Delete(_dir, true);
+
     private static List<TitleSuggestion> Find(params (string Video, string Title)[] names) => TitleSuggestions.Find(names, TitleCleaner.Default);
 
     [Fact]
@@ -18,6 +22,28 @@ public class TitleSuggestionsTests
         Assert.Equal(new[] { "@XY", "GRP", "[Some Torrents]" }, found.Select(s => s.Entry));
         Assert.All(found, s => Assert.Equal(2, s.Videos));
         Assert.Equal("Movie One (2012): \"GRP\"", found.Single(s => s.Entry == "GRP").Example);
+        Assert.Equal(new[] { "Movie One (2012)", "Movie Two (2011)" }, found.Single(s => s.Entry == "GRP").VideoNames);
+    }
+
+    [Fact]
+    public void The_log_lists_each_suggestion_with_the_films_and_shows_it_is_in_by_name()
+    {
+        var found = Find(
+            ("Movie Two (2011)", "GRP"), ("My Show", "GRP"), ("Movie One (2012)", "GRP English"), ("My Show", "GRP"),
+            ("Movie Three (2014)", "[Some Torrents]"), ("Movie Four (2015)", "[Some Torrents]"));
+
+        Assert.Equal(
+            "text in track names the 'Text to remove' list misses (in 2+ films or shows); add it with 'Suggested text' on the settings page:" +
+            "\n    GRP (3): Movie One (2012), Movie Two (2011), My Show" +
+            "\n    [Some Torrents] (2): Movie Four (2015), Movie Three (2014)",
+            TitleSuggestions.Describe(found));
+
+        // Long lists are cut short.
+        Assert.Equal(
+            "text in track names the 'Text to remove' list misses (in 2+ films or shows); add it with 'Suggested text' on the settings page:" +
+            "\n    GRP (3): Movie One (2012), Movie Two (2011) and 1 more" +
+            "\n    and 1 more",
+            TitleSuggestions.Describe(found, most: 1, namesEach: 2));
     }
 
     [Fact]
@@ -55,20 +81,90 @@ public class TitleSuggestionsTests
     }
 
     [Fact]
-    public void Only_switched_on_suggestions_are_taken_and_the_list_is_then_done_with()
+    public void Countries_and_regions_in_language_labels_are_never_suggested()
     {
-        var search = new TitleSuggestionSearch();
-        Assert.True(search.TryStart());
-        Assert.False(search.TryStart());
-        search.Finish(new List<TitleSuggestion> { new() { Entry = "GRP" }, new() { Entry = "@XY" }, new() { Entry = "ZED" } }, 100);
+        var found = Find(
+            ("Movie One (2012)", "English (United States)"), ("Movie Two (2011)", "English (United States)"),
+            ("Movie Three (2013)", "Português (Brasil)"), ("Movie Four (2014)", "Portuguese (Brazil)"),
+            ("Movie Five (2015)", "Spanish (Latinoamérica)"), ("Movie Six (2016)", "Español (Latinoamérica)"),
+            ("Movie Seven (2017)", "pt-BR"), ("Movie Eight (2018)", "es-MX [GRP]"),
+            ("Movie Nine (2019)", "English-SRT"), ("Movie Ten (2020)", "English-SRT [GRP]"),
+            ("Movie Eleven (2021)", "French (Canada)"), ("Movie Twelve (2022)", "Français (Belgique)"),
+            ("Movie Thirteen (2023)", "Chinese (Hong Kong)"), ("Movie Fourteen (2024)", "Chinese (Taiwan)"));
 
-        search.Toggle(2);
-        search.Toggle(0);
-        search.Toggle(5);
-        Assert.True(search.IsSelected(0));
+        // Only the real tag is left.
+        Assert.Equal(new[] { "[GRP]" }, found.Select(s => s.Entry));
+        Assert.True(Regions.Count > 400);
+    }
 
-        Assert.Equal(new[] { "GRP", "ZED" }, search.TakeSelected());
-        Assert.Null(search.Found);
-        Assert.Empty(search.TakeSelected());
+    [Fact]
+    public void Ordinary_track_names_from_a_real_library_are_never_suggested()
+    {
+        // Each label in two different films, as a library has them; only the release tag is an ad.
+        var labels = new[]
+        {
+            "Commentary by director Jane Doe and producer John Roe", "Closed Captions", "English Hearing Impaired",
+            "Compatibility Track / Dolby Digital Audio / 5.1 / 48 kHz / 640 kbps", "x264 1920x800 1845 kb/s", "Audio Stream",
+            "Video", "WEB-DL", "WEB-DL SDH", "French (Parisian)", "Français (Canadien)", "Español (Latinoamericano)",
+            "Greek (Modern)", "Srpski (Latinica)", "中文（简体）", "中文（繁體）", "廣東話", "Bahasa Melayu", "Lietuvių", "Български",
+            "Tiếng Việt", "Hrvatski", "ekk", "HQ White SUP", "HQ Geel IDX", "Normal SRT", "Regular Full", "Stripped SRT",
+            "Encoded by GRP", "Original Surround Mix / DTS-HD Master Audio / 5.1", "DTS-CORE 1536K", "BDRip 720p multisub GRP"
+        };
+        var names = labels.SelectMany(l => new[] { ("Movie One (2012)", l), ("Movie Two (2013)", l) }).ToArray();
+
+        Assert.Equal(new[] { "GRP" }, Find(names).Select(s => s.Entry));
+    }
+
+    [Fact]
+    public void Suggestions_build_up_across_runs()
+    {
+        var data = new SuggestionData();
+        TitleSuggestions.Merge(data, new[] { ("Movie One (2012)", "English [GRP]") }, TitleCleaner.Default);
+        Assert.Empty(TitleSuggestions.Waiting(data, TitleCleaner.Default)); // one film so far
+
+        TitleSuggestions.Merge(data, new[] { ("My Show", "English [GRP]"), ("My Show", "English [GRP]") }, TitleCleaner.Default);
+        var waiting = Assert.Single(TitleSuggestions.Waiting(data, TitleCleaner.Default));
+        Assert.Equal("[GRP]", waiting.Entry);
+        Assert.Equal(new[] { "Movie One (2012)", "My Show" }, waiting.VideoNames);
+        Assert.Equal("[GRP]", TitleSuggestions.BoxText(data, new[] { waiting }));
+
+        // Once the list has it, it stops showing.
+        Assert.Empty(TitleSuggestions.Waiting(data, new TitleCleaner(TitleCleaner.DefaultList + "\n[GRP]")));
+    }
+
+    [Fact]
+    public void A_line_deleted_from_the_box_is_never_suggested_again_and_a_typed_one_stays()
+    {
+        var data = new SuggestionData();
+        TitleSuggestions.Merge(data, new[] { ("Movie One (2012)", "GRP ZED"), ("Movie Two (2011)", "GRP ZED") }, TitleCleaner.Default);
+        string Box() => TitleSuggestions.BoxText(data, TitleSuggestions.Waiting(data, TitleCleaner.Default));
+        var shown = Box();
+        Assert.Equal("GRP\nZED", shown);
+
+        TitleSuggestions.KeepEdits(data, shown, "ZED\n/GRP\\d+/");
+        Assert.Equal("/GRP\\d+/\nZED", Box());
+
+        // Found again by a later run: still gone.
+        TitleSuggestions.Merge(data, new[] { ("Movie Three (2013)", "GRP") }, TitleCleaner.Default);
+        Assert.DoesNotContain("GRP", TitleSuggestions.Lines(Box()));
+    }
+
+    [Fact]
+    public void Add_to_the_list_adds_every_line_that_passes_the_checks_and_keeps_the_rest()
+    {
+        var store = new SuggestionStore(_dir, new TestJsonSerializer());
+        store.Update(data => TitleSuggestions.KeepEdits(data, "", "GRP\nForced"));
+        var options = new PluginOptions { TitleAds = "*.com", SuggestedText = "GRP\nForced" };
+
+        var status = Plugin.AddSuggestedText(options, store);
+
+        Assert.Equal("*.com\nGRP", options.TitleAds);
+        Assert.Equal("GRP", options.AddedFromSuggestions);
+        Assert.Equal(Emby.Web.GenericEdit.Elements.ItemStatus.Warning, status.Status);
+        Assert.StartsWith("Added to the list: GRP. The next run cleans them out", status.StatusText);
+        // Refused by the list's checks: it stays in the box. Added: never suggested again, even off the list later.
+        var data = new SuggestionStore(_dir, new TestJsonSerializer()).Read();
+        Assert.Equal(new[] { "Forced" }, data.Typed);
+        Assert.Contains("GRP", data.Dismissed);
     }
 }

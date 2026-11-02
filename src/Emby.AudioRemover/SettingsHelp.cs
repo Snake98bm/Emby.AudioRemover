@@ -143,12 +143,28 @@ namespace Emby.AudioRemover
                 "Saves, then reads the track names Emby stored for every video in your libraries when it scanned them - no file is " +
                 "opened, so it takes seconds. It runs the list over them first, then suggests what's left that keeps turning up in " +
                 "at least 2 different films or shows but describes nothing: a release group's or a site's tag such as 'ETRG', or a " +
-                "bracketed one like '[SomeSite Torrents]'. Words that describe a track (languages, formats like DTS or 5.1, Commentary, " +
-                "Forced, SDH…), words with digits, and words from the film's or show's own name are never suggested, and every " +
-                "suggestion passes the same checks as the box. They're listed most common first, each with an example; switch on the " +
-                "ones you want and click 'Add selected to the list'. The list is then saved sorted: website endings, then words, then " +
-                "regular expressions, each A-Z. Nothing changes in any file until a run, and test mode shows what it would do. Each " +
-                "run's log also ends with the same kind of suggestions, from the track names that run read."),
+                "bracketed one like '[SomeSite Torrents]'. Words that describe a track (languages, formats like DTS, 5.1 or SRT, " +
+                "Commentary, Forced, SDH…), countries and regions that are part of a language label ('English (United States)', " +
+                "'Português (Brasil)', 'pt-BR', 'English-SRT'), words with digits, and words from the film's or show's own name are " +
+                "never suggested, and every suggestion passes the same checks as the box. What it finds goes into 'Suggested text' " +
+                "below, next to what runs found. Each run's log also lists the suggestions from the track names that run read, with " +
+                "the films and shows they're in."),
+            ("Collect suggestions during runs",
+                "On: every run adds what it finds in the track names it reads to 'Suggested text', so the suggestions build up over " +
+                "time, including from new videos as they're added. Off: only 'Find text to remove' adds to it. Either way nothing is " +
+                "added to the list, and no file is changed, until you click 'Add to the list'."),
+            ("Suggested text",
+                "What runs and 'Find text to remove' found, one per line, A-Z, in the same format as 'Text to remove': it's in at " +
+                "least 2 different films or shows and isn't on the list yet. Under it, 'Where they were found' lists the films and " +
+                "shows each is in (no folders or files). Edit a line, delete one - a deleted line is never suggested again - or " +
+                "type your own; Save keeps the box as you left it. 'Add to the list' adds every line to 'Text to remove', which is " +
+                "saved sorted: website endings, then words, then regular expressions, each A-Z. A line that fails the list's checks " +
+                "stays in the box with the reason. Nothing changes in any file until a run, and test mode shows what it would do."),
+            ("Clean names where added suggestions were found",
+                "On: a video whose track names (or file title, with 'Also clean up the file's title') have text you added with 'Add " +
+                "to the list' is rewritten to take it out, even with 'Rewrite a video just for clean-up' off - only those videos, " +
+                "not every video with something to clean. After that its names are clean, so it isn't rewritten again for them. " +
+                "Taking an entry off the list stops it. Off: added text is only cleaned when a video is rewritten anyway."),
             ("How names are cleaned",
                 "Each track name (and the file's title, if you chose that) is cleaned on its own, in four steps. " +
                 "1) Website addresses: a name that ends in one of the '*.' endings in 'Text to remove' (.com, .net, .org, .to, .in, " +
@@ -158,7 +174,9 @@ namespace Emby.AudioRemover
                 "So 'https://SomeSite.in', 'www.SomeSite.com/movies' and 'SomeSite.in Encodes' all go completely. Names that only " +
                 "look like an address are left alone: a dotted title ('Back.to.the.Future'), numbers ('5.1') and codecs ('H.264'). " +
                 "2) Your own lines in 'Text to remove': a word goes only as a whole word, capitals don't matter ('YTS' never cuts into " +
-                "'Bytes'); a line between slashes is a regular expression and removes whatever it matches. " +
+                "'Bytes'); an underscore counts as a gap between words, so 'GROUP' also goes from 'SITE_GROUP', and a space in a line " +
+                "matches any gap, so 'SITE GROUP' also takes 'SITE_GROUP' and 'SITE.GROUP'. A line between slashes is a regular " +
+                "expression and removes whatever it matches. " +
                 "3) Tidying up what's left: empty brackets ('()', '[]'), a doubled separator ('English -  - Forced' becomes 'English - " +
                 "Forced'), separators left at the start or end (- | ~ : • / and similar), and extra spaces. " +
                 "4) Whole names: a name that's now empty, or is only a file name (ending in .mkv, .mp4, .avi and the like) or a release " +

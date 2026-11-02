@@ -238,23 +238,49 @@ namespace Emby.AudioRemover
         [VisibleCondition(nameof(CleanTitles), SimpleCondition.IsTrue)]
         public StatusItem SuggestionsStatus { get; set; } = new StatusItem(Plugin.SuggestionsCaption, "");
 
-        [DisplayName("Suggestions")]
-        [Description("Most common first. Switch on the ones to add.")]
-        [VisibleCondition(nameof(SuggestionsShown), SimpleCondition.IsNotNullOrEmpty)]
-        public GenericItemList SuggestionItems { get; set; } = new GenericItemList();
+        [DisplayName("Collect suggestions during runs")]
+        [Description("Each run adds text it finds in track names to 'Suggested text' below, so it builds up over time.")]
+        [VisibleCondition(nameof(CleanTitles), SimpleCondition.IsTrue)]
+        public bool SuggestDuringRuns { get; set; } = true;
 
-        // Set while suggestions are on the page, so the list and its button show.
+        // Shown from, and saved into, the suggestions file; never the settings file.
+        [DisplayName("Suggested text")]
+        [Description("Found in your track names, not on the list yet. Edit lines, delete them (they're not suggested again) or type " +
+                     "your own, same format as above. Then click Add to the list.")]
+        [EditMultiline(6)]
+        [VisibleCondition(nameof(CleanTitles), SimpleCondition.IsTrue)]
+        public string SuggestedText { get; set; }
+
+        // The box as it was shown, so a save can tell which lines were taken out or typed.
         [Browsable(false)]
-        public string SuggestionsShown { get; set; }
+        public string SuggestedTextShown { get; set; }
 
         [DisplayName("")]
-        [Description("Adds the switched-on suggestions to 'Text to remove' (kept sorted) and saves.")]
-        [VisibleCondition(nameof(SuggestionsShown), SimpleCondition.IsNotNullOrEmpty)]
-        public ButtonItem AddSuggestionsButton { get; set; } = new ButtonItem("Add selected to the list")
+        [Description("Adds every line in 'Suggested text' to 'Text to remove' (kept sorted) and saves. A line that fails the list's checks stays in the box.")]
+        [VisibleCondition(nameof(CleanTitles), SimpleCondition.IsTrue)]
+        public ButtonItem AddSuggestionsButton { get; set; } = new ButtonItem("Add to the list")
         {
             CommandId = SettingsPageView.AddSuggestionsCommand,
             Icon = IconNames.playlist_add
         };
+
+        [DisplayName("Where they were found")]
+        [VisibleCondition(nameof(SuggestionsListed), SimpleCondition.IsNotNullOrEmpty)]
+        public GenericItemList SuggestionPlaces { get; set; } = new GenericItemList();
+
+        // Set while suggestions are in the box, so the list of where they were found shows.
+        [Browsable(false)]
+        public string SuggestionsListed { get; set; }
+
+        [DisplayName("Clean names where added suggestions were found")]
+        [Description("Videos whose track names have text you added from 'Suggested text' are rewritten to take it out, even with " +
+                     "'Rewrite a video just for clean-up' off.")]
+        [VisibleCondition(nameof(CleanTitles), SimpleCondition.IsTrue)]
+        public bool CleanWhereSuggested { get; set; } = true;
+
+        // What 'Add to the list' added, for the switch above; only entries still on the list count.
+        [Browsable(false)]
+        public string AddedFromSuggestions { get; set; }
 
         [DisplayName("Backup of the original file")]
         [Description("Where the original goes before a video is changed.")]
@@ -355,47 +381,54 @@ namespace Emby.AudioRemover
         public CaptionItem HelpCaption { get; set; } = new CaptionItem("Help");
 
         // Help: each setting's name in bold with its explanation underneath, in page order. Emby has no way to add these
-        // from a list, so there's one entry per setting; a test checks there's one for every entry in SettingsHelp.
-        [DisplayName("")] public StatusItem Help01 { get; set; } = SettingsHelp.Item(0);
-        [DisplayName("")] public StatusItem Help02 { get; set; } = SettingsHelp.Item(1);
-        [DisplayName("")] public StatusItem Help03 { get; set; } = SettingsHelp.Item(2);
-        [DisplayName("")] public StatusItem Help04 { get; set; } = SettingsHelp.Item(3);
-        [DisplayName("")] public StatusItem Help05 { get; set; } = SettingsHelp.Item(4);
-        [DisplayName("")] public StatusItem Help06 { get; set; } = SettingsHelp.Item(5);
-        [DisplayName("")] public StatusItem Help07 { get; set; } = SettingsHelp.Item(6);
-        [DisplayName("")] public StatusItem Help08 { get; set; } = SettingsHelp.Item(7);
-        [DisplayName("")] public StatusItem Help09 { get; set; } = SettingsHelp.Item(8);
-        [DisplayName("")] public StatusItem Help10 { get; set; } = SettingsHelp.Item(9);
-        [DisplayName("")] public StatusItem Help11 { get; set; } = SettingsHelp.Item(10);
-        [DisplayName("")] public StatusItem Help12 { get; set; } = SettingsHelp.Item(11);
-        [DisplayName("")] public StatusItem Help13 { get; set; } = SettingsHelp.Item(12);
-        [DisplayName("")] public StatusItem Help14 { get; set; } = SettingsHelp.Item(13);
-        [DisplayName("")] public StatusItem Help15 { get; set; } = SettingsHelp.Item(14);
-        [DisplayName("")] public StatusItem Help16 { get; set; } = SettingsHelp.Item(15);
-        [DisplayName("")] public StatusItem Help17 { get; set; } = SettingsHelp.Item(16);
-        [DisplayName("")] public StatusItem Help18 { get; set; } = SettingsHelp.Item(17);
-        [DisplayName("")] public StatusItem Help19 { get; set; } = SettingsHelp.Item(18);
-        [DisplayName("")] public StatusItem Help20 { get; set; } = SettingsHelp.Item(19);
-        [DisplayName("")] public StatusItem Help21 { get; set; } = SettingsHelp.Item(20);
-        [DisplayName("")] public StatusItem Help22 { get; set; } = SettingsHelp.Item(21);
-        [DisplayName("")] public StatusItem Help23 { get; set; } = SettingsHelp.Item(22);
-        [DisplayName("")] public StatusItem Help24 { get; set; } = SettingsHelp.Item(23);
-        [DisplayName("")] public StatusItem Help25 { get; set; } = SettingsHelp.Item(24);
-        [DisplayName("")] public StatusItem Help26 { get; set; } = SettingsHelp.Item(25);
-        [DisplayName("")] public StatusItem Help27 { get; set; } = SettingsHelp.Item(26);
-        [DisplayName("")] public StatusItem Help28 { get; set; } = SettingsHelp.Item(27);
-        [DisplayName("")] public StatusItem Help29 { get; set; } = SettingsHelp.Item(28);
-        [DisplayName("")] public StatusItem Help30 { get; set; } = SettingsHelp.Item(29);
-        [DisplayName("")] public StatusItem Help31 { get; set; } = SettingsHelp.Item(30);
-        [DisplayName("")] public StatusItem Help32 { get; set; } = SettingsHelp.Item(31);
-        [DisplayName("")] public StatusItem Help33 { get; set; } = SettingsHelp.Item(32);
-        [DisplayName("")] public StatusItem Help34 { get; set; } = SettingsHelp.Item(33);
-        [DisplayName("")] public StatusItem Help35 { get; set; } = SettingsHelp.Item(34);
-        [DisplayName("")] public StatusItem Help36 { get; set; } = SettingsHelp.Item(35);
+        // from a list, so there's one entry per setting; a test checks there's one for every entry in SettingsHelp. Always read
+        // from SettingsHelp: the settings file keeps a copy of each, and an older version's copy would show stale or repeated help.
+        [DisplayName("")] public StatusItem Help01 { get => SettingsHelp.Item(0); set { } }
+        [DisplayName("")] public StatusItem Help02 { get => SettingsHelp.Item(1); set { } }
+        [DisplayName("")] public StatusItem Help03 { get => SettingsHelp.Item(2); set { } }
+        [DisplayName("")] public StatusItem Help04 { get => SettingsHelp.Item(3); set { } }
+        [DisplayName("")] public StatusItem Help05 { get => SettingsHelp.Item(4); set { } }
+        [DisplayName("")] public StatusItem Help06 { get => SettingsHelp.Item(5); set { } }
+        [DisplayName("")] public StatusItem Help07 { get => SettingsHelp.Item(6); set { } }
+        [DisplayName("")] public StatusItem Help08 { get => SettingsHelp.Item(7); set { } }
+        [DisplayName("")] public StatusItem Help09 { get => SettingsHelp.Item(8); set { } }
+        [DisplayName("")] public StatusItem Help10 { get => SettingsHelp.Item(9); set { } }
+        [DisplayName("")] public StatusItem Help11 { get => SettingsHelp.Item(10); set { } }
+        [DisplayName("")] public StatusItem Help12 { get => SettingsHelp.Item(11); set { } }
+        [DisplayName("")] public StatusItem Help13 { get => SettingsHelp.Item(12); set { } }
+        [DisplayName("")] public StatusItem Help14 { get => SettingsHelp.Item(13); set { } }
+        [DisplayName("")] public StatusItem Help15 { get => SettingsHelp.Item(14); set { } }
+        [DisplayName("")] public StatusItem Help16 { get => SettingsHelp.Item(15); set { } }
+        [DisplayName("")] public StatusItem Help17 { get => SettingsHelp.Item(16); set { } }
+        [DisplayName("")] public StatusItem Help18 { get => SettingsHelp.Item(17); set { } }
+        [DisplayName("")] public StatusItem Help19 { get => SettingsHelp.Item(18); set { } }
+        [DisplayName("")] public StatusItem Help20 { get => SettingsHelp.Item(19); set { } }
+        [DisplayName("")] public StatusItem Help21 { get => SettingsHelp.Item(20); set { } }
+        [DisplayName("")] public StatusItem Help22 { get => SettingsHelp.Item(21); set { } }
+        [DisplayName("")] public StatusItem Help23 { get => SettingsHelp.Item(22); set { } }
+        [DisplayName("")] public StatusItem Help24 { get => SettingsHelp.Item(23); set { } }
+        [DisplayName("")] public StatusItem Help25 { get => SettingsHelp.Item(24); set { } }
+        [DisplayName("")] public StatusItem Help26 { get => SettingsHelp.Item(25); set { } }
+        [DisplayName("")] public StatusItem Help27 { get => SettingsHelp.Item(26); set { } }
+        [DisplayName("")] public StatusItem Help28 { get => SettingsHelp.Item(27); set { } }
+        [DisplayName("")] public StatusItem Help29 { get => SettingsHelp.Item(28); set { } }
+        [DisplayName("")] public StatusItem Help30 { get => SettingsHelp.Item(29); set { } }
+        [DisplayName("")] public StatusItem Help31 { get => SettingsHelp.Item(30); set { } }
+        [DisplayName("")] public StatusItem Help32 { get => SettingsHelp.Item(31); set { } }
+        [DisplayName("")] public StatusItem Help33 { get => SettingsHelp.Item(32); set { } }
+        [DisplayName("")] public StatusItem Help34 { get => SettingsHelp.Item(33); set { } }
+        [DisplayName("")] public StatusItem Help35 { get => SettingsHelp.Item(34); set { } }
+        [DisplayName("")] public StatusItem Help36 { get => SettingsHelp.Item(35); set { } }
+        [DisplayName("")] public StatusItem Help37 { get => SettingsHelp.Item(36); set { } }
+        [DisplayName("")] public StatusItem Help38 { get => SettingsHelp.Item(37); set { } }
+        [DisplayName("")] public StatusItem Help39 { get => SettingsHelp.Item(38); set { } }
 
         /// <summary>Drops the lists and log text that are only filled in for display, so they never go into the settings file.</summary>
         // Filled in only to show the page; not settings.
-        private static readonly HashSet<string> DisplayOnly = new HashSet<string> { nameof(SelectedLog), nameof(LogText), nameof(TitleAdsSample) };
+        private static readonly HashSet<string> DisplayOnly = new HashSet<string>
+        {
+            nameof(SelectedLog), nameof(LogText), nameof(TitleAdsSample), nameof(SuggestedText), nameof(SuggestedTextShown)
+        };
 
         /// <summary>Every setting as "Name: value", in page order, for the top of each run log.</summary>
         /// <param name="libraryNames">Emby's library names by id, so the libraries read "Movies (12082)" rather than just the id.</param>
@@ -438,8 +471,10 @@ namespace Emby.AudioRemover
             LogLinks = new GenericItemList();
             TitleAdsSample = null;
             SuggestionsStatus = new StatusItem(Plugin.SuggestionsCaption, "");
-            SuggestionItems = new GenericItemList();
-            SuggestionsShown = null;
+            SuggestedText = null;
+            SuggestedTextShown = null;
+            SuggestionPlaces = new GenericItemList();
+            SuggestionsListed = null;
             TitleAdsStatus = new StatusItem(TitleAdsCaption, "");
         }
     }

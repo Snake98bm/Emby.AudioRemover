@@ -86,11 +86,21 @@ namespace Emby.AudioRemover
             CleanFileTitle = o.CleanFileTitle,
             RewriteForTitles = o.RewriteForTitles,
             Titles = new TitleCleaner(o.TitleAds, onTitleEntrySwitchedOff),
+            CleanAdded = AddedCleaner(o),
             UseHeardLanguages = ActsOnHeard(o),
             DoubleCheckHeard = DoubleChecks(o),
             RetagLoneTrack = o.Listen && o.RetagLoneTrack,
             TagUntaggedTracks = o.Listen && o.TagUntaggedTracks
         };
+
+        // Entries added from the suggestions that are still on the list, for "Clean names where added suggestions were found".
+        internal static TitleCleaner AddedCleaner(PluginOptions o)
+        {
+            if (!o.CleanTitles || !o.CleanWhereSuggested) return null;
+            var list = new HashSet<string>(TitleSuggestions.Lines(o.TitleAds), StringComparer.OrdinalIgnoreCase);
+            var added = TitleSuggestions.Lines(o.AddedFromSuggestions).Where(list.Contains).ToList();
+            return added.Count > 0 ? new TitleCleaner(string.Join("\n", added)) : null;
+        }
 
         // What's heard changes this video: what's kept (step 2), or the tags of tracks that have none.
         private static bool DependsOnHeard(PluginOptions o, ProbeResult probe) =>

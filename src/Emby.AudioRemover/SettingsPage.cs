@@ -120,9 +120,6 @@ namespace Emby.AudioRemover
         public const string DownloadWhisperCommand = "AudioRemoverDownloadWhisper";
         public const string FindTitleAdsCommand = "AudioRemoverFindTitleAds";
         public const string AddSuggestionsCommand = "AudioRemoverAddSuggestions";
-
-        // One suggestion's switch on the list; its number on the list follows the prefix.
-        public const string SuggestionToggleCommandPrefix = "AudioRemoverSuggestionToggle:";
         public const string RunNowCommand = "AudioRemoverRunNow";
         public const string StopCommand = "AudioRemoverStop";
         public const string SaveCommand = "AudioRemoverSave";
@@ -196,19 +193,12 @@ namespace Emby.AudioRemover
                     UIViewInfoChanged?.Invoke(this, new GenericEventArgs<IPluginUIView>(this));
                     return Task.FromResult<IPluginUIView>(this);
 
+                // Saved first, so edits in the box are kept; saved again with the list grown, and the box shows what's left.
                 case AddSuggestionsCommand:
-                    var picked = _plugin.Suggestions.TakeSelected();
-                    if (picked.Count == 0)
-                    {
-                        Options.SuggestionsStatus = new StatusItem(Plugin.SuggestionsCaption, "Nothing added: no suggestion was switched on.", ItemStatus.Warning);
-                    }
-                    else
-                    {
-                        Options.TitleAds = Plugin.WithEntries(Options.TitleAds, picked);
-                        Save();
-                        Options.SuggestionsStatus = new StatusItem(Plugin.SuggestionsCaption,
-                            $"Added to the list: {string.Join(", ", picked)}. Runs use them from now on; test mode shows what they'd change.", ItemStatus.Succeeded);
-                    }
+                    Save();
+                    var added = _plugin.AddSuggestedText(Options);
+                    Save();
+                    Options.SuggestionsStatus = added;
                     UIViewInfoChanged?.Invoke(this, new GenericEventArgs<IPluginUIView>(this));
                     return Task.FromResult<IPluginUIView>(this);
 
@@ -254,15 +244,6 @@ namespace Emby.AudioRemover
                     return Task.FromResult<IPluginUIView>(this);
 
                 default:
-                    if (commandId != null && commandId.StartsWith(SuggestionToggleCommandPrefix, StringComparison.Ordinal)
-                        && int.TryParse(commandId.Substring(SuggestionToggleCommandPrefix.Length), out var suggestion))
-                    {
-                        _plugin.Suggestions.Toggle(suggestion);
-                        var found = _plugin.Suggestions.Found;
-                        if (found != null) Options.SuggestionItems = Plugin.SuggestionItemsFor(found, _plugin.Suggestions.IsSelected);
-                        UIViewInfoChanged?.Invoke(this, new GenericEventArgs<IPluginUIView>(this));
-                        return Task.FromResult<IPluginUIView>(this);
-                    }
                     if (commandId != null && commandId.StartsWith(RestoreToggleCommandPrefix, StringComparison.Ordinal)
                         && int.TryParse(commandId.Substring(RestoreToggleCommandPrefix.Length), out var index))
                     {
@@ -368,6 +349,7 @@ namespace Emby.AudioRemover
         {
             _plugin.RestoreConfirmation.Take(DateTime.UtcNow);
             Options.ValidateOrThrow();
+            _plugin.KeepSuggestionEdits(Options);
             _plugin.Save(Options);
             Options = _plugin.PrepareForDisplay(Options);
             UIViewInfoChanged?.Invoke(this, new GenericEventArgs<IPluginUIView>(this));

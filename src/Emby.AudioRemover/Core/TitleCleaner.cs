@@ -129,8 +129,10 @@ namespace Emby.AudioRemover.Core
 
             if (!IsRegex(entry))
             {
-                // Whole words only, so "YTS" doesn't eat into "Bytes".
-                regex = new Regex(@"(?<!\w)" + Regex.Escape(entry) + @"(?!\w)", Options, RegexTimeout);
+                // Whole words only, so "YTS" doesn't eat into "Bytes". An underscore is a gap, as release names use it for one
+                // ("GROUP_TAG"), and a space in the entry matches any gap: "SITE TAG" also takes "SITE_TAG".
+                var words = Regex.Escape(entry).Replace(@"\ ", @"[\s._-]+");
+                regex = new Regex(@"(?<![\p{L}\p{N}])" + words + @"(?![\p{L}\p{N}])", Options, RegexTimeout);
                 return TakesOrdinaryTitles(regex);
             }
 
