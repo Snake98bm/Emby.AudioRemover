@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>Emby.AudioRemover</RootNamespace>
+    <AssemblyName>Emby.AudioRemover</AssemblyName>
+    <Version>0.1.0</Version>
+    <Authors>Snake98bm</Authors>
+    <Description>Emby plugin that removes foreign-language audio tracks from video files.</Description>
+    <!-- Override on the command line to check against another Emby release: -p:EmbySdkVersion=4.10.0.24-beta2 -->
+    <EmbySdkVersion Condition="'$(EmbySdkVersion)' == ''">4.9.1.90</EmbySdkVersion>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <!-- Local builds from build.ps1 get an alpha version (0.6.9-alpha.N); see Set-AlphaVersion there. -->
+  <Import Project="alpha.props" Condition="Exists('alpha.props')" />
+
+  <ItemGroup>
+    <PackageReference Include="MediaBrowser.Server.Core" Version="$(EmbySdkVersion)" />
+    <!-- Compile-time only; the Emby server already provides it at runtime. -->
+    <PackageReference Include="System.Memory" Version="4.6.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="thumb.png" LogicalName="Emby.AudioRemover.thumb.png" />  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Emby.AudioRemover.Tests" />
+  </ItemGroup>
+
+</Project>
