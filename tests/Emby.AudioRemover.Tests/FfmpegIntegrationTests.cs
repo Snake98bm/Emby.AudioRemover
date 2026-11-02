@@ -39,6 +39,84 @@ public sealed class FfmpegIntegrationTests : IDisposable
         if (_runner == null) Assert.Skip("Emby's ffmpeg not found in tools/ffmpeg (or AUDIOREMOVER_FFMPEG_DIR)");
     }
 
+    // whisper.cpp with the base model, laid out as AudioRemover downloads it: tools/whisper/Release (or AUDIOREMOVER_WHISPER_DIR).
+    private static string FindWhisperFolder()
+    {
+        var exe = OperatingSystem.IsWindows() ? "whisper-cli.exe" : "whisper-cli";
+        bool Complete(string folder) => File.Exists(Path.Combine(folder, exe)) && File.Exists(Path.Combine(folder, "ggml-base.bin"));
+
+        var fromEnv = Environment.GetEnvironmentVariable("AUDIOREMOVER_WHISPER_DIR");
+        if (!string.IsNullOrEmpty(fromEnv) && Complete(fromEnv)) return fromEnv;
+        for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir != null; dir = dir.Parent)
+        {
+            var candidate = Path.Combine(dir.FullName, "tools", "whisper", "Release");
+            if (Complete(candidate)) return candidate;
+        }
+        return null;
+    }
+
+    [Fact]
+    public void A_whisper_cli_an_earlier_alpha_unpacked_is_recognised_by_its_checksum()
+    {
+        var folder = FindWhisperFolder();
+        if (folder == null || !OperatingSystem.IsWindows()) Assert.Skip("needs the pinned whisper-cli.exe in tools/whisper/Release");
+
+        // Unpacked without the version file, as alpha.6 and alpha.7 did.
+        var install = Directory.CreateDirectory(Path.Combine(_dir, "old-download")).FullName;
+        File.Copy(Path.Combine(folder, "whisper-cli.exe"), Path.Combine(install, "whisper-cli.exe"));
+        Assert.Equal(WhisperFiles.ProgramVersion, new WhisperInstall(install).InstalledVersion);
+        Assert.True(File.Exists(Path.Combine(install, "whisper.cpp-version.txt")));
+
+        // Anything else is still "put there by hand".
+        var byHand = Directory.CreateDirectory(Path.Combine(_dir, "by-hand")).FullName;
+        File.WriteAllText(Path.Combine(byHand, "whisper-cli.exe"), "some other build");
+        Assert.Null(new WhisperInstall(byHand).InstalledVersion);
+    }
+
+    [Fact]
+    public async Task A_whisper_cli_that_cannot_start_is_reported_not_counted_as_a_failed_video()
+    {
+        RequireFfmpeg();
+        var ct = TestContext.Current.CancellationToken;
+        var video = Path.Combine(_dir, "Tone.mkv");
+        var make = await _runner.RunFfmpeg(new List<string>
+        {
+            "-hide_banner", "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=duration=100", "-c:a", "aac", video
+        }, ct);
+        Assert.True(make.Success, make.StdErr);
+
+        // As when security software blocks it, or the folder is empty: no whisper-cli to start.
+        var missing = new WhisperInstall(Directory.CreateDirectory(Path.Combine(_dir, "no-whisper")).FullName);
+        var listener = new LanguageListener(_runner, missing, "Base");
+
+        var failure = await Assert.ThrowsAsync<WhisperFailedException>(() => listener.Listen(video, new ProbeStream { index = 0 }, 100, ct));
+        Assert.StartsWith("whisper-cli couldn't start: ", failure.Message);
+    }
+
+    [Fact]
+    public async Task Whisper_hears_three_clips_and_a_tone_never_counts_as_a_language()
+    {
+        RequireFfmpeg();
+        var folder = FindWhisperFolder();
+        if (folder == null) Assert.Skip("whisper.cpp not found in tools/whisper/Release (or AUDIOREMOVER_WHISPER_DIR)");
+        var ct = TestContext.Current.CancellationToken;
+
+        var video = Path.Combine(_dir, "Tone.mkv");
+        var make = await _runner.RunFfmpeg(new List<string>
+        {
+            "-hide_banner", "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=100",
+            "-c:a", "aac", "-metadata:s:a:0", "language=fin", video
+        }, ct);
+        Assert.True(make.Success, make.StdErr);
+
+        var heard = await new LanguageListener(_runner, new WhisperInstall(folder), "Base").Listen(video, new ProbeStream { index = 0 }, 100, ct);
+
+        // Every clip was cut, heard and answered; a tone just never gets sure enough to name a language.
+        Assert.Equal(3, heard.Clips.Count);
+        Assert.Null(heard.Language);
+        Assert.DoesNotContain(Directory.GetFiles(Path.GetTempPath(), "audioremover-*.wav"), f => File.GetLastWriteTimeUtc(f) > DateTime.UtcNow.AddMinutes(-1));
+    }
+
     private async Task<ProbeResult> Probe(string path)
     {
         var result = await _runner.RunFfprobe(FfmpegArgs.Probe(path), TestContext.Current.CancellationToken);
@@ -48,7 +126,7 @@ public sealed class FfmpegIntegrationTests : IDisposable
 
     // 3-second video with four audio tracks - French (default), English, English commentary, and one with no
     // language - plus an English subtitle (MKV) so we can check it survives.
-    private async Task<string> MakeSampleVideo(string name, bool withSubtitle = true)
+    private async Task<string> MakeSampleVideo(string name, bool withSubtitle = true, bool withAds = false)
     {
         var args = new List<string>
         {
@@ -73,6 +151,16 @@ public sealed class FfmpegIntegrationTests : IDisposable
             "-metadata:s:a:2", "language=eng", "-metadata:s:a:2", "title=Commentary",
             "-disposition:a:0", "default", "-disposition:a:1", "0", "-disposition:a:2", "comment", "-disposition:a:3", "0"
         });
+        if (withAds)
+        {
+            // What download sites do: their name on the file and on every track.
+            args.AddRange(new[]
+            {
+                "-metadata", "title=Sample Movie (2020) - SomeSite.com", "-metadata:s:v:0", "title=SomeSite.com",
+                "-metadata:s:a:1", "title=- SomeSite.com"
+            });
+            if (withSubtitle) args.AddRange(new[] { "-metadata:s:s:0", "title=Forced - SomeSite.com" });
+        }
 
         var output = Path.Combine(_dir, name);
         args.Add(output);
@@ -114,6 +202,35 @@ public sealed class FfmpegIntegrationTests : IDisposable
         Assert.True(swap.Success, swap.Message);
         Assert.Equal(2, (await Probe(video)).Count("audio"));
         Assert.Equal(4, (await Probe(video + BackupPaths.SideBySideSuffix)).Count("audio"));
+    }
+
+    // MKV keeps every title; MP4 only stores the file's own title, so that's all there is to clean there.
+    [Theory]
+    [InlineData("Ads (2020).mkv", "matroska")]
+    [InlineData("Ads (2020).mp4", "mp4")]
+    public async Task Website_ads_are_taken_out_of_the_titles(string name, string muxer)
+    {
+        RequireFfmpeg();
+        var video = await MakeSampleVideo(name, withSubtitle: muxer == "matroska", withAds: true);
+        var before = await Probe(video);
+        var settings = new PlannerSettings { KeepLanguages = PlannerSettings.ParseLanguages("eng"), CleanTitles = true, CleanFileTitle = true };
+        var plan = AudioPlanner.Plan(before, settings, video);
+
+        var temp = video + ".audioremover-tmp";
+        var removed = plan.Remove.Select(s => s.index).ToList();
+        var remux = await _runner.RunFfmpeg(FfmpegArgs.Remux(video, temp, muxer, removed, plan.DefaultChanges(), plan.StreamTitles(), plan.FileTitle),
+            TestContext.Current.CancellationToken);
+        Assert.True(remux.Success, remux.StdErr);
+
+        var after = await Probe(temp);
+        Assert.Null(RemuxVerifier.Verify(before, after, plan.Remove.Count, new FileInfo(video).Length, new FileInfo(temp).Length));
+        Assert.Equal("Sample Movie (2020)", after.format.Tag("title"));
+        Assert.DoesNotContain(after.streams, s => s.Title.Contains("SomeSite"));
+        Assert.Empty(AudioPlanner.Plan(after, settings, video).TitleChanges);
+
+        if (muxer != "matroska") return;
+        Assert.Equal("", after.streams.First(s => s.IsAudio).Title);
+        Assert.Equal("Forced", after.streams.Single(s => s.codec_type == "subtitle").Title);
     }
 
     [Fact]

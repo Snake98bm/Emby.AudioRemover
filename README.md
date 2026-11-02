@@ -14,9 +14,36 @@ It's the audio twin of [SubRemover](https://github.com/Snake98bm/Emby.Subremover
 - **Test on a few files first** – *Max videos per run* and *Only process paths containing* let you try it on a single movie. Separate several titles with `;`, e.g. `My Movie (2020); My Show - S01E02`.
 - Optional: always keep the first audio track (usually the film's original language), so a foreign film keeps its own audio next to the dub.
 - Optional: remove commentary tracks and audio description tracks, even in languages you keep (only while a main track stays).
-- Default audio: when the default track is removed, or is commentary or audio description, the default moves to the first kept main track. Or choose a default audio language.
+- Default audio: when the default track is removed, or is commentary or audio description, the default moves to the first kept main track. Or choose a default audio language. Optionally, the default goes to the best-quality track in that same language (5.1 over a stereo copy, then lossless, then the higher bitrate).
+- Optional: listen when no kept language is found. When a video has two or more audio tracks and none is tagged with a language you keep (a video that would otherwise be left alone), [Whisper](https://github.com/ggml-org/whisper.cpp) listens offline to three short clips of each track and names the language spoken. Three switches: **Listen** (step 1, only logs what it heard), **Act on what it hears** (step 2: a "Finnish" track that's really English is kept and its tag corrected) and **Extra safe** (step 3: when the quick listen disagrees with a tag or can't tell, the next bigger Whisper model hears 10 more clips, and at least 7 must agree, each 90% sure). whisper.cpp and the model you choose (Base, 141 MB, recommended) are downloaded on first use from fixed addresses and checked against their checksums.
+- Optional, with listening on: fix language tags on their own. **Check and retag a lone track** corrects a video's only track when it's tagged with a language you don't keep (a "Dutch" track that's English); **Tag tracks that have no language** tags a video's tracks when it has two or more and none has a tag (often a stereo and a 5.1 copy of the same sound). Each rewrites the file once; a single untagged track is left alone.
+- Optional: clean up track names. Download sites put their name on every track (`English - SomeSite.com`) and Emby shows it in the audio and subtitle menus; this takes it out. What's removed is an editable list on the settings page: `*.com` for any website ending in .com, a word such as a release group's tag, or a regular expression between slashes (`/GROUP\.\w+/`), with a button to check it and one to reset it to the default. A name that's only an ad, or only the download's file or release name (`My.Movie.2020.1080p.WEBRip.x265-GROUP.mkv`), is removed, so Emby shows the track's language and format instead. The file's own title can be cleaned too (off by default). Names are cleaned when a video is rewritten for its audio anyway, or, if you choose, a video is rewritten just for that.
 - Optional: process new videos as Emby adds them. A few minutes after the last one arrives, one run checks just the new videos with your settings (Test mode included), so a whole season gets one run and one log.
 - Its own settings page with **Run now**, run status and a log viewer (open a log in a new window or download it), plus an entry in the server sidebar under **Advanced** (can be turned off).
+
+## How track names are cleaned
+
+With **Clean up track names** on, each track name (and the file's title, if you choose that) is cleaned on its own, in four steps:
+
+1. **Website addresses.** A name ending in one of the `*.` endings in **Text to remove** (`.com`, `.net`, `.org`, `.to`, `.in`, `.top` and the rest of the list) goes, together with what belongs to it:
+   - `http://`, `https://` and `www.` in front, and a two-part ending like `.co.uk`
+   - a path after it, like `/movies/123`
+   - `Downloaded from`, `Encoded by`, `Ripped by` or `Uploaded by` before it
+   - `Encode(s)`, `Encoded`, `Rip(s)` or `Release(s)` right after it
+
+   Names that only look like an address stay: a dotted title (`Back.to.the.Future`), numbers (`5.1`) and codecs (`H.264`).
+2. **Your own lines** in **Text to remove**: a word goes only as a whole word, ignoring capitals (`YTS` never cuts into `Bytes`); a line between slashes is a regular expression.
+3. **Tidying up:** empty brackets, a doubled separator (`English -  - Forced` → `English - Forced`), separators left at the start or end (`- | ~ : • /`…), and extra spaces.
+4. **Whole names:** a name that's now empty, or is only a file name (`….mkv`, `.mp4`, `.avi`…) or a release name (no spaces, dots between the words, and a tag such as `1080p`, `2160p`, `WEB-DL`, `WEBRip`, `BluRay`, `HDTV`, `x264`, `x265`, `HEVC` or `10bit`), is removed, so Emby shows the track's language and format instead.
+
+| Name | After |
+|---|---|
+| `European (Forced) - SomeSite.com` | `European (Forced)` |
+| `- SomeSite.com`, `https://SomeSite.in`, `SomeSite.in Encodes` | *(removed)* |
+| `My.Movie.2020.1080p.WEBRip.x265-GROUP` | *(removed)* |
+| `English`, `Dolby Digital 5.1`, `Director's Commentary` | unchanged |
+
+A name with nothing to clean is never touched, and the run log lists every name a run would change.
 
 ## Install
 

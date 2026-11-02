@@ -148,6 +148,7 @@ public sealed class ReviewFixTests : IDisposable
         forPage.LogText = "a very big log text";
         forPage.LanguageChoices.Add(new Emby.Web.GenericEdit.Common.EditorSelectOption { Value = "eng", Name = "English (eng)" });
         forPage.KeepLanguages = "eng,spa";
+        forPage.TitleAdsSample = "a title to try";
 
         Assert.Null(store.Get().LogText);
 
@@ -155,6 +156,7 @@ public sealed class ReviewFixTests : IDisposable
 
         var json = File.ReadAllText(store.FilePath);
         Assert.DoesNotContain("a very big log text", json);
+        Assert.DoesNotContain("a title to try", json);
         Assert.DoesNotContain("English (eng)", json);
         Assert.Equal("eng,spa", new OptionsStore(_dir, "AudioRemover", new TestJsonSerializer(), new NullLogger()).Get().KeepLanguages);
         Assert.Equal("a very big log text", forPage.LogText);

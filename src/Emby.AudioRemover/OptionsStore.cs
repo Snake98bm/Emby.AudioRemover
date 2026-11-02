@@ -45,6 +45,7 @@ namespace Emby.AudioRemover
                             _options = (PluginOptions)new PluginOptions().DeserializeFromJsonStream(stream, _json);
                         }
                         _options.ClearDisplayOnlyFields();
+                        _options.CarryOverOldSettings();
                     }
                 }
                 catch (Exception ex)

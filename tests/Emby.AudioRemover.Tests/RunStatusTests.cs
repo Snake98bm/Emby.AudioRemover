@@ -71,10 +71,23 @@ public class RunStatusTests
     }
 
     [Fact]
-    public void Status_line_sits_right_under_the_run_now_and_save_buttons()
+    public void Status_line_sits_right_under_the_run_now_stop_and_save_buttons()
     {
         var order = typeof(PluginOptions).GetProperties().Select(p => p.Name).ToList();
-        Assert.Equal(order.IndexOf(nameof(PluginOptions.RunNowButton)) + 1, order.IndexOf(nameof(PluginOptions.SaveButton)));
+        Assert.Equal(order.IndexOf(nameof(PluginOptions.RunNowButton)) + 1, order.IndexOf(nameof(PluginOptions.StopButton)));
+        Assert.Equal(order.IndexOf(nameof(PluginOptions.StopButton)) + 1, order.IndexOf(nameof(PluginOptions.SaveButton)));
         Assert.Equal(order.IndexOf(nameof(PluginOptions.SaveButton)) + 1, order.IndexOf(nameof(PluginOptions.RunStatus)));
+    }
+
+    [Fact]
+    public void Stop_with_nothing_running_says_so_and_keeps_the_last_result()
+    {
+        var current = new StatusItem("Status", "Last run 2 Nov 10:29: 5 changed", ItemStatus.Succeeded);
+
+        var status = RunStatus.NothingToStop(current);
+
+        Assert.Equal("Nothing is running. Last run 2 Nov 10:29: 5 changed", status.StatusText);
+        Assert.Equal(ItemStatus.Succeeded, status.Status);
+        Assert.Equal(ItemStatus.Warning, RunStatus.Stopping().Status);
     }
 }

@@ -40,8 +40,12 @@ namespace Emby.AudioRemover.Core
         };
 
         /// <param name="setDefault">Default flags to change, by input stream index: true sets it, false clears it.</param>
+        /// <param name="setTitles">Track names to change, by input stream index; "" removes the name.</param>
+        /// <param name="fileTitle">The file's new title, "" to remove it, or null to leave it.</param>
+        /// <param name="setLanguages">Language tags to change, by input stream index.</param>
         public static IList<string> Remux(string input, string output, string muxer, IEnumerable<int> removeStreamIndexes,
-            IDictionary<int, bool> setDefault = null)
+            IDictionary<int, bool> setDefault = null, IDictionary<int, string> setTitles = null, string fileTitle = null,
+            IDictionary<int, string> setLanguages = null)
         {
             var removed = removeStreamIndexes.OrderBy(i => i).ToList();
             var args = new List<string> { "-hide_banner", "-nostdin", "-v", "error", "-y", "-i", input, "-map", "0" };
@@ -58,12 +62,38 @@ namespace Emby.AudioRemover.Core
                 args.Add("-disposition:" + OutputIndex(change.Key, removed));
                 args.Add(change.Value ? "+default" : "-default");
             }
+
+            // An empty value deletes the name.
+            if (fileTitle != null)
+            {
+                args.Add("-metadata");
+                args.Add("title=" + fileTitle);
+            }
+            foreach (var change in (setTitles ?? new Dictionary<int, string>()).OrderBy(c => c.Key))
+            {
+                args.Add("-metadata:s:" + OutputIndex(change.Key, removed));
+                args.Add("title=" + change.Value);
+            }
+            foreach (var change in (setLanguages ?? new Dictionary<int, string>()).OrderBy(c => c.Key))
+            {
+                args.Add("-metadata:s:" + OutputIndex(change.Key, removed));
+                args.Add("language=" + change.Value);
+            }
             args.AddRange(new[]
             {
                 "-max_muxing_queue_size", "4096", "-f", muxer, output
             });
             return args;
         }
+
+        /// <summary>A clip of one audio track as 16 kHz mono WAV, the form Whisper listens to.</summary>
+        public static IList<string> AudioClip(string input, int streamIndex, double startSeconds, int seconds, string output) => new List<string>
+        {
+            "-hide_banner", "-nostdin", "-v", "error", "-y",
+            "-ss", startSeconds.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture),
+            "-t", seconds.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            "-i", input, "-map", "0:" + streamIndex, "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", "-f", "wav", output
+        };
 
         /// <summary>Index a kept stream has in the remuxed file: removed streams before it shift it down.</summary>
         public static int OutputIndex(int inputIndex, IEnumerable<int> removedIndexes) =>

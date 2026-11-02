@@ -356,8 +356,65 @@ public sealed class SettingsAndLogTests : IDisposable
         Assert.Contains("Always keep the first audio track: on", lines);
         Assert.Contains("Only process paths containing: My Movie (2020); My Show", lines);
         Assert.Contains("Default audio language: (empty)", lines);
+        Assert.Contains(lines, l => l.StartsWith("Text to remove: *.com, *.net, *.org, "));
+        Assert.Contains("Also clean up the file's title: off", lines);
+        Assert.Contains("Rewrite a video just for clean-up: off", lines);
+        Assert.Contains("Listen when no kept language is found: off", lines);
+        Assert.Contains("Act on what it hears: off", lines);
+        Assert.Contains("Extra safe: check with a bigger model: on", lines);
+        Assert.Contains("Check and retag a lone track: off", lines);
+        Assert.DoesNotContain(lines, l => l.StartsWith("ListenMode"));
+        Assert.DoesNotContain(lines, l => l.StartsWith("Try the list on a name"));
+
+        // The libraries by name, keeping the id; one Emby no longer has stays as its id.
+        options.Libraries = "12082,12083, 99";
+        var named = options.DescribeSettings(new Dictionary<string, string> { ["12082"] = "Movies", ["12083"] = "TV Shows" });
+        Assert.Contains("Libraries to process: Movies (12082), TV Shows (12083), 99", named);
+        Assert.Contains("Libraries to process: 12082,12083, 99", options.DescribeSettings());
+        options.Libraries = "";
+        Assert.Contains("Libraries to process: (empty)", options.DescribeSettings(new Dictionary<string, string>()));
         Assert.Contains(lines, l => l.StartsWith("Backup of the original file: NextToOriginal"));
         Assert.DoesNotContain(lines, l => l.StartsWith("Run log") || l.Contains("Choices") || l.StartsWith("Videos that will be restored"));
+    }
+
+    [Fact]
+    public void Help_explains_the_bigger_model_only_runs_when_the_first_listen_disagrees_with_the_tag()
+    {
+        var help = SettingsHelp.Entries.Single(e => e.Setting == "Extra safe: check with a bigger model").Text;
+
+        Assert.Contains("WHEN STEP 1 DISAGREES WITH THE TAG", help);
+        Assert.Contains("WHEN STEP 1 CAN'T TELL", help);
+        Assert.Contains("When step 1 agrees with the tag, step 3 never runs", help);
+        Assert.Contains("only LOGS", SettingsHelp.Entries.Single(e => e.Setting == "Listen when no kept language is found").Text);
+
+        var textBox = typeof(PluginOptions).GetProperty(nameof(PluginOptions.TitleAds))!
+            .GetCustomAttribute<System.ComponentModel.DescriptionAttribute>()!.Description;
+        Assert.Contains("http://, https://, www. or /path", textBox);
+    }
+
+    [Fact]
+    public void Help_explains_what_cleaning_looks_for_and_removes()
+    {
+        var help = SettingsHelp.Entries.Single(e => e.Setting == "How names are cleaned").Text;
+
+        Assert.All(new[] { "http://", "https://", "www.", "Downloaded from", "Encodes", "whole word", "regular expression", "release name", "1080p" },
+            phrase => Assert.Contains(phrase, help));
+        Assert.Contains("'How names are cleaned' below", SettingsHelp.Entries.Single(e => e.Setting == "Clean up track names").Text);
+    }
+
+    [Fact]
+    public void Checking_the_title_list_shows_what_is_skipped_and_the_sample_cleaned()
+    {
+        var fine = Plugin.CheckTitleAds(TitleCleaner.DefaultList, null);
+        Assert.Equal(ItemStatus.Succeeded, fine.Status);
+        Assert.Equal("All 31 entries are fine.", fine.StatusText);
+
+        var check = Plugin.CheckTitleAds(TitleCleaner.DefaultList + "\n/.+/\nGROUP", "SomeSite.top | English - GROUP");
+        Assert.Equal(ItemStatus.Warning, check.Status);
+        Assert.Equal("1 skipped: '/.+/' would remove ordinary titles like 'English'. 'SomeSite.top | English - GROUP' becomes 'English'.",
+            check.StatusText);
+
+        Assert.EndsWith("becomes no title (removed).", Plugin.CheckTitleAds(TitleCleaner.DefaultList, "SomeSite.com").StatusText);
     }
 
     [Fact]
@@ -383,7 +440,8 @@ public sealed class SettingsAndLogTests : IDisposable
             .ToList();
 
         Assert.Equal(SettingsHelp.Entries.Select(e => e.Setting), shown.Select(s => s.Caption));
-        Assert.StartsWith("When on, nothing is changed", shown[1].StatusText);
+        Assert.StartsWith("When on, nothing is changed", shown.Single(s => s.Caption == "Test mode (dry run)").StatusText);
+        Assert.Equal(new[] { "Run now", "Stop", "Test mode (dry run)" }, shown.Take(3).Select(s => s.Caption));
     }
 
     [Fact]

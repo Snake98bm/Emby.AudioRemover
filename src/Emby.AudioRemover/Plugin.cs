@@ -2,7 +2,10 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Globalization;
 using System.Reflection;
+using System.Threading;
+using System.Threading.Tasks;
 using Emby.AudioRemover.Core;
 using Emby.AudioRemover.ScheduledTasks;
 using Emby.Web.GenericEdit.Common;
@@ -41,6 +44,7 @@ namespace Emby.AudioRemover
                 applicationHost.Resolve<ILogManager>().GetLogger(Name));
             _logDirectory = applicationHost.Resolve<IApplicationPaths>().LogDirectoryPath;
             _state = new StateStore(applicationHost.Resolve<IApplicationPaths>().PluginConfigurationsPath, applicationHost.Resolve<IJsonSerializer>());
+            Whisper = new WhisperInstall(Path.Combine(applicationHost.Resolve<IApplicationPaths>().PluginConfigurationsPath, "AudioRemover-whisper"));
             _pages = new List<IPluginUIPageController>
             {
                 SettingsPageController.ForPluginList(this, Name),
@@ -50,6 +54,181 @@ namespace Emby.AudioRemover
         }
 
         public static Plugin Instance { get; private set; }
+
+        /// <summary>whisper.cpp and its model, for listening to audio; downloaded on first use.</summary>
+        internal WhisperInstall Whisper { get; }
+
+        /// <summary>The last "Find text to remove".</summary>
+        internal TitleSuggestionSearch Suggestions { get; } = new TitleSuggestionSearch();
+
+        internal const string SuggestionsCaption = "Find text to remove";
+
+        // Runs on after the click: reading every video's track names from Emby's database takes a few seconds.
+        internal void StartFindingSuggestions(PluginOptions options)
+        {
+            if (!Suggestions.TryStart()) return;
+            var list = options.TitleAds;
+            var libraries = options.Libraries;
+            Task.Run(() =>
+            {
+                try
+                {
+                    var names = TrackNames(libraries, out var videos);
+                    Suggestions.Finish(TitleSuggestions.Find(names, new TitleCleaner(list)), videos);
+                }
+                catch (Exception ex)
+                {
+                    Suggestions.Fail(ex.Message);
+                }
+            });
+        }
+
+        // The names Emby stored when it scanned each file: no file is opened.
+        private List<(string Video, string Title)> TrackNames(string libraries, out int videos)
+        {
+            var selected = new HashSet<string>((libraries ?? "").Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries).Select(s => s.Trim()));
+            var folders = _libraryManager.GetVirtualFolders().Where(f => selected.Contains(f.ItemId)).ToList();
+            var items = RemoveAudioTask.LibraryVideos(_libraryManager, folders);
+            var streams = _applicationHost.Resolve<IMediaSourceManager>();
+            var names = new List<(string, string)>();
+            foreach (var item in items)
+            {
+                var video = MediaProcessor.VideoName(item);
+                names.AddRange(streams.GetMediaStreams(item.InternalId)
+                    .Where(s => !string.IsNullOrWhiteSpace(s.Title))
+                    .Select(s => (video, s.Title)));
+            }
+            videos = items.Length;
+            return names;
+        }
+
+        internal StatusItem SuggestionsStatus()
+        {
+            var search = Suggestions;
+            if (search.Running)
+                return new StatusItem(SuggestionsCaption, "Looking through the track names Emby has for your libraries… Reopen this page in a moment.", ItemStatus.InProgress);
+            if (search.Problem != null)
+                return new StatusItem(SuggestionsCaption, "Couldn't look through the track names: " + search.Problem, ItemStatus.Failed);
+            var found = search.Found;
+            if (found == null)
+                return new StatusItem(SuggestionsCaption,
+                    "Looks through your libraries' track names for text that keeps turning up across different films and shows but isn't on the list yet.",
+                    ItemStatus.None);
+            if (found.Count == 0)
+                return new StatusItem(SuggestionsCaption, $"Nothing new in {search.VideosLookedAt} videos' track names: the list already covers it.", ItemStatus.Succeeded);
+            return new StatusItem(SuggestionsCaption,
+                $"{found.Count} suggestion{(found.Count == 1 ? "" : "s")} from {search.VideosLookedAt} videos' track names. Switch on the ones to add, then " +
+                "click 'Add selected to the list'. Each one passed the same checks as the box.", ItemStatus.Succeeded);
+        }
+
+        internal static GenericItemList SuggestionItemsFor(IList<TitleSuggestion> found, Func<int, bool> isSelected) =>
+            new GenericItemList(found.Select((s, i) => new GenericListItem
+            {
+                IconMode = ItemListIconMode.NoIcons,
+                PrimaryText = s.Entry,
+                SecondaryText = $"In {s.Videos} films or shows, e.g. {s.Example}",
+                Toggle = new ToggleButtonItem
+                {
+                    IsChecked = isSelected(i),
+                    Caption = "Add",
+                    CommandId = SettingsPageView.SuggestionToggleCommandPrefix + i.ToString(CultureInfo.InvariantCulture)
+                }
+            }));
+
+        /// <summary>
+        /// The list with the picked entries added, each once, and sorted so it stays easy to read: website endings, then
+        /// words, then regular expressions, each A-Z.
+        /// </summary>
+        internal static string WithEntries(string list, IEnumerable<string> entries)
+        {
+            var lines = (list ?? "").Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).Select(l => l.Trim()).Where(l => l.Length > 0).ToList();
+            foreach (var entry in entries)
+                if (!lines.Any(l => string.Equals(l, entry, StringComparison.OrdinalIgnoreCase))) lines.Add(entry);
+            int Kind(string l) => l.StartsWith("*.", StringComparison.Ordinal) ? 0 : l.Length > 2 && l[0] == '/' && l[l.Length - 1] == '/' ? 2 : 1;
+            return string.Join("\n", lines.OrderBy(Kind).ThenBy(l => l, StringComparer.OrdinalIgnoreCase));
+        }
+
+        // Not awaited: it runs on after the click, and the page shows how far it is. It sets its progress before it
+        // first waits, so the status right after the click already says it's downloading.
+        internal void StartWhisperDownload(PluginOptions options) => _ = DownloadWhisper(options.WhisperModel, CheckModelOf(options));
+
+        // The chosen model first, then (for "Act on it") the check model; the second waits for the first.
+        private async Task DownloadWhisper(string model, string checkModel)
+        {
+            if (await Whisper.Ensure(model, CancellationToken.None).ConfigureAwait(false) == null && checkModel != null)
+                await Whisper.Ensure(checkModel, CancellationToken.None).ConfigureAwait(false);
+        }
+
+        /// <summary>The model for the 10-clip check when acting on what's heard; null when it isn't needed or is the chosen one.</summary>
+        internal static string CheckModelOf(PluginOptions options)
+        {
+            if (!MediaProcessor.DoubleChecks(options)) return null;
+            var check = WhisperFiles.CheckModelFor(options.WhisperModel).Name;
+            return check == WhisperFiles.Model(options.WhisperModel).Name ? null : check;
+        }
+
+        internal StatusItem WhisperStatusFor(PluginOptions options) => WhisperStatus(Whisper, options.WhisperModel, CheckModelOf(options));
+
+        private static string ModelText(WhisperModelInfo info) => $"the {info.Name} model ({WhisperFiles.SizeText(info.File.Size)}, dated {info.Date})";
+
+        internal static StatusItem WhisperStatus(WhisperInstall whisper, string model, string checkModel = null)
+        {
+            var info = WhisperFiles.Model(model);
+            var check = checkModel != null ? WhisperFiles.Model(checkModel) : null;
+            var pinned = $"whisper.cpp v{WhisperFiles.ProgramVersion} ({WhisperFiles.ProgramDate})";
+            var models = ModelText(info) + (check != null ? $", and {ModelText(check)} for the 10-clip check" : "");
+            if (whisper.Downloading != null)
+                return new StatusItem(PluginOptions.WhisperCaption, "Downloading " + whisper.Downloading + ". Reopen this page to see how far it is.", ItemStatus.InProgress);
+            if (whisper.IsReady(model) && (check == null || whisper.IsReady(check.Name)))
+            {
+                var installed = whisper.InstalledVersion == null ? "whisper-cli (put there by hand)"
+                    : whisper.InstalledVersion == WhisperFiles.ProgramVersion ? pinned
+                    : "whisper.cpp v" + whisper.InstalledVersion;
+                var downloaded = whisper.ModelDownloaded(model)?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+                return new StatusItem(PluginOptions.WhisperCaption,
+                    $"Ready: {installed} with {models}, downloaded {downloaded}, in {whisper.Folder}.{NewerWhisper(whisper, info, check)}",
+                    ItemStatus.Succeeded);
+            }
+            if (whisper.LastProblem != null)
+                return new StatusItem(PluginOptions.WhisperCaption, "Download failed: " + whisper.LastProblem, ItemStatus.Failed);
+            if (whisper.IsOldDownload)
+                return new StatusItem(PluginOptions.WhisperCaption,
+                    $"whisper.cpp v{whisper.InstalledVersion} is downloaded; this AudioRemover uses {pinned}. It's downloaded the next time " +
+                    "Whisper is needed, or click Download Whisper.", ItemStatus.None);
+            var old = new[] { info, check }.FirstOrDefault(m => m != null && whisper.IsOldModel(m.Name));
+            if (old != null)
+                return new StatusItem(PluginOptions.WhisperCaption,
+                    $"An older {old.Name} model file is downloaded; this AudioRemover uses a newer one. It's downloaded the next time " +
+                    "Whisper is needed, or click Download Whisper.", ItemStatus.None);
+            return new StatusItem(PluginOptions.WhisperCaption,
+                $"Not downloaded yet: {pinned}, about 10 MB, and {models}. " +
+                "Click Download Whisper, or the first run that needs it downloads it.", ItemStatus.None);
+        }
+
+        // Only once the daily check has an answer. AudioRemover doesn't fetch newer files by itself: they come with an
+        // AudioRemover update, after they've been tried, with their own checksums.
+        internal static string NewerWhisper(WhisperInstall whisper, WhisperModelInfo model, WhisperModelInfo checkModel = null)
+        {
+            var news = new List<string>();
+            var program = whisper.LatestVersion;
+            if (program != null)
+                news.Add(WhisperInstall.IsNewer(program, WhisperFiles.ProgramVersion)
+                    ? $"whisper.cpp v{program} is out"
+                    : "that's the newest whisper.cpp");
+            var anyChanged = false;
+            foreach (var m in new[] { model, checkModel }.Where(m => m != null))
+            {
+                var unchanged = whisper.ModelUnchanged(m.Name);
+                if (unchanged == null) continue;
+                news.Add(unchanged.Value ? $"the {m.Name} model hasn't changed" : $"the {m.Name} model file on Hugging Face has changed");
+                anyChanged |= unchanged == false;
+            }
+            if (news.Count == 0) return "";
+
+            var anyNewer = (program != null && WhisperInstall.IsNewer(program, WhisperFiles.ProgramVersion)) || anyChanged;
+            return " Latest check: " + string.Join(", and ", news) + "." +
+                   (anyNewer ? " AudioRemover moves to newer files in one of its own updates, after trying them." : "");
+        }
 
         // The settings file keeps the name earlier versions used, so saved settings carry over after the rename.
         private const string SettingsFileName = "AudioRemover";
@@ -104,6 +283,19 @@ namespace Emby.AudioRemover
             NewVideos.Take(); // a full run checks them anyway
             _applicationHost.Resolve<ITaskManager>().QueueIfNotRunning<RemoveAudioTask>();
             return RunStatus.Started(DateTime.Now);
+        }
+
+        /// <returns>The status line to show after the click.</returns>
+        internal StatusItem StopRun()
+        {
+            var worker = RemoveTaskWorker();
+            // Already stopping: the status says so ("Stopping…"); clicking again changes nothing.
+            if (worker?.State == TaskState.Cancelling) return CurrentStatus();
+            if (worker == null || worker.State != TaskState.Running) return RunStatus.NothingToStop(CurrentStatus());
+
+            // Like Stop on Emby's Scheduled Tasks page: the video being changed is left as it was, its new copy deleted.
+            _applicationHost.Resolve<ITaskManager>().Cancel(worker);
+            return RunStatus.Stopping();
         }
 
         // Never let a status problem stop the settings page from opening.
@@ -217,6 +409,21 @@ namespace Emby.AudioRemover
             options.KeepUndefined = true;
         }
 
+        /// <summary>What the settings page shows under "Text to remove": skipped entries and why, and the sample name cleaned.</summary>
+        internal static StatusItem CheckTitleAds(string list, string sample)
+        {
+            var cleaner = new TitleCleaner(list);
+            var text = cleaner.Problems.Count == 0
+                ? $"All {cleaner.EntryCount} entries are fine."
+                : $"{cleaner.Problems.Count} skipped: " + string.Join("; ", cleaner.Problems) + ".";
+            if (!string.IsNullOrWhiteSpace(sample))
+            {
+                var after = cleaner.Clean(sample.Trim());
+                text += $" '{sample.Trim()}' becomes " + (after.Length == 0 ? "no title (removed)." : $"'{after}'.");
+            }
+            return new StatusItem(PluginOptions.TitleAdsCaption, text, cleaner.Problems.Count == 0 ? ItemStatus.Succeeded : ItemStatus.Warning);
+        }
+
         internal PluginOptions PrepareForDisplay(PluginOptions options)
         {
             options.LibraryChoices = _libraryManager.GetVirtualFolders()
@@ -228,6 +435,19 @@ namespace Emby.AudioRemover
             if (options.DefaultLanguageChoices.All(c => c.Value != options.DefaultLanguage)) options.DefaultLanguage = string.Empty;
             options.RunStatus = CurrentStatus();
             options.RestoreStatus = BackupCount();
+            options.TitleAdsStatus = CheckTitleAds(options.TitleAds, options.TitleAdsSample);
+            options.SuggestionsStatus = SuggestionsStatus();
+            var suggestions = Suggestions.Found;
+            options.SuggestionItems = suggestions != null && suggestions.Count > 0 ? SuggestionItemsFor(suggestions, Suggestions.IsSelected) : new GenericItemList();
+            options.SuggestionsShown = suggestions != null && suggestions.Count > 0 ? "yes" : null;
+            options.WhisperModelChoices = WhisperFiles.All.Select(m => new EditorSelectOption { Value = m.Name, Name = m.Label, IsEnabled = true }).ToList();
+            if (options.Listen)
+            {
+                Whisper.CheckForNewerDaily(DateTime.UtcNow, options.WhisperModel);
+                var check = CheckModelOf(options);
+                if (check != null) Whisper.CheckForNewerDaily(DateTime.UtcNow, check);
+            }
+            options.WhisperStatus = WhisperStatusFor(options);
             options.RestoreItems = new GenericItemList();
             options.RestoreListShown = null;
             options.RestoreButton = PluginOptions.NewRestoreButton();

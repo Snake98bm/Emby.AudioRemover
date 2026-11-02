@@ -24,6 +24,9 @@ namespace Emby.AudioRemover.Core
         public string duration { get; set; }
         public string format_name { get; set; }
         public Dictionary<string, string> tags { get; set; }
+
+        public string Tag(string name) =>
+            tags?.FirstOrDefault(kv => string.Equals(kv.Key, name, StringComparison.OrdinalIgnoreCase)).Value;
     }
 
     public class ProbeStream
@@ -33,10 +36,15 @@ namespace Emby.AudioRemover.Core
         public string codec_name { get; set; }
         public int channels { get; set; }
         public string channel_layout { get; set; }
+        public string profile { get; set; }
+        public string bit_rate { get; set; }
         public Dictionary<string, string> tags { get; set; }
         public Dictionary<string, int> disposition { get; set; }
 
         public bool IsAudio => string.Equals(codec_type, "audio", StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>What Whisper heard on this track, when it listened; null when it didn't.</summary>
+        public HeardLanguage Heard { get; set; }
 
         public string Tag(string name)
         {
@@ -82,10 +90,23 @@ namespace Emby.AudioRemover.Core
         public string Channels =>
             !string.IsNullOrEmpty(channel_layout) ? channel_layout.Replace("(side)", "") : channels > 0 ? channels + "ch" : "";
 
+        /// <summary>Bits per second: ffprobe's own figure, or the statistics tag mkvmerge writes. 0 when neither says.</summary>
+        public long BitRate =>
+            long.TryParse(bit_rate ?? Tag("BPS") ?? Tag("BPS-eng"), NumberStyles.None, CultureInfo.InvariantCulture, out var bps) ? bps : 0;
+
+        /// <summary>Lossless sound: TrueHD, FLAC, ALAC, PCM or DTS-HD Master Audio.</summary>
+        public bool IsLossless =>
+            LosslessCodecs.Contains(codec_name ?? string.Empty)
+            || (codec_name ?? string.Empty).StartsWith("pcm_", StringComparison.OrdinalIgnoreCase)
+            || (string.Equals(codec_name, "dts", StringComparison.OrdinalIgnoreCase) && (profile ?? string.Empty).Contains("DTS-HD MA"));
+
+        private static readonly HashSet<string> LosslessCodecs = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "truehd", "mlp", "flac", "alac" };
+
         public string Describe() =>
             $"#{index} {Language} {codec_name}{(Channels.Length > 0 ? " " + Channels : "")}{(IsDefault ? " default" : "")}" +
             $"{(Disposition("comment") && Title.IndexOf("comment", StringComparison.OrdinalIgnoreCase) < 0 ? " commentary" : "")}" +
             $"{(Disposition("visual_impaired") ? " audio-description" : "")}" +
-            $"{(Title.Length > 0 ? " \"" + Title + "\"" : "")}";
+            $"{(Title.Length > 0 ? " \"" + Title + "\"" : "")}" +
+            $"{(Heard != null ? " (" + Heard.Describe() + ")" : "")}";
     }
 }

@@ -13,6 +13,13 @@ namespace Emby.AudioRemover
         public static StatusItem Started(DateTime nowLocal) =>
             new StatusItem(Caption, $"Started at {nowLocal:HH:mm}. Reopen this page to see progress and the result.", ItemStatus.InProgress);
 
+        public static StatusItem Stopping() =>
+            new StatusItem(Caption, "Stopping… It stops after the step it's on; the video it's changing is left as it was.", ItemStatus.Warning);
+
+        /// <summary>Stop clicked with no run going: says so, then how things stand.</summary>
+        public static StatusItem NothingToStop(StatusItem current) =>
+            new StatusItem(Caption, "Nothing is running. " + current.StatusText, current.Status);
+
         public static StatusItem Describe(TaskState? state, double? progress, TaskResult lastTaskResult, RunSummary lastRun)
         {
             if (state == TaskState.Running)

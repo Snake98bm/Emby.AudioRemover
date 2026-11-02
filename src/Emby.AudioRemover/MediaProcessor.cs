@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Emby.AudioRemover.Core;
 using MediaBrowser.Controller.Entities;
+using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Providers;
 using MediaBrowser.Model.IO;
@@ -33,12 +34,21 @@ namespace Emby.AudioRemover
         private readonly IFileSystem _fileSystem;
         private readonly IJsonSerializer _json;
         private readonly ILogger _log;
+        private readonly WhisperInstall _whisper;
+        private bool _whisperProblemLogged;
 
         /// <summary>What this processor did (or would do in test mode) so far; one processor is made per run.</summary>
         public RunTotals Totals { get; } = new RunTotals();
 
+        /// <summary>Every track name this run read, with its film or show, for the suggestions at the end of the log.</summary>
+        public List<(string Video, string Title)> TrackNames { get; } = new List<(string, string)>();
+
+        /// <summary>The film, or for an episode its show: what "found in N films or shows" counts.</summary>
+        internal static string VideoName(BaseItem item) =>
+            item is Episode episode && !string.IsNullOrEmpty(episode.SeriesName) ? episode.SeriesName : item.Name ?? System.IO.Path.GetFileNameWithoutExtension(item.Path);
+
         public MediaProcessor(FfmpegRunner runner, ILibraryMonitor libraryMonitor, IProviderManager providerManager,
-            IFileSystem fileSystem, IJsonSerializer json, ILogger log)
+            IFileSystem fileSystem, IJsonSerializer json, ILogger log, WhisperInstall whisper = null)
         {
             _runner = runner;
             _libraryMonitor = libraryMonitor;
@@ -46,9 +56,23 @@ namespace Emby.AudioRemover
             _fileSystem = fileSystem;
             _json = json;
             _log = log;
+            _whisper = whisper;
         }
 
-        public static PlannerSettings SettingsFrom(PluginOptions o) => new PlannerSettings
+        /// <summary>Step 2 switched on (with step 1): what's heard decides what's kept.</summary>
+        internal static bool ActsOnHeard(PluginOptions o) => o.Listen && o.ActOnHeard;
+
+        /// <summary>
+        /// Step 3 switched on (with step 1): the bigger model hears 10 more clips when the quick listen disagrees with a tag or
+        /// can't tell. With step 2 off it still runs, so the log shows what acting on it would do.
+        /// </summary>
+        internal static bool DoubleChecks(PluginOptions o) => o.Listen && o.ExtraSafe;
+
+        // More than any real video has; a file with dozens of audio tracks doesn't hold a run up for long, and the log names
+        // any tracks past it.
+        private const int MostTracksHeard = 16;
+
+        public static PlannerSettings SettingsFrom(PluginOptions o, Action<string> onTitleEntrySwitchedOff = null) => new PlannerSettings
         {
             KeepLanguages = PlannerSettings.ParseLanguages(o.KeepLanguages),
             KeepUndefined = o.KeepUndefined,
@@ -56,8 +80,37 @@ namespace Emby.AudioRemover
             RemoveCommentary = o.RemoveCommentary,
             RemoveAudioDescription = o.RemoveAudioDescription,
             SetDefault = o.SetDefault,
-            DefaultLanguage = string.IsNullOrWhiteSpace(o.DefaultLanguage) ? null : Languages.Normalize(o.DefaultLanguage)
+            DefaultLanguage = string.IsNullOrWhiteSpace(o.DefaultLanguage) ? null : Languages.Normalize(o.DefaultLanguage),
+            BestAudioDefault = o.BestAudioDefault,
+            CleanTitles = o.CleanTitles,
+            CleanFileTitle = o.CleanFileTitle,
+            RewriteForTitles = o.RewriteForTitles,
+            Titles = new TitleCleaner(o.TitleAds, onTitleEntrySwitchedOff),
+            UseHeardLanguages = ActsOnHeard(o),
+            DoubleCheckHeard = DoubleChecks(o),
+            RetagLoneTrack = o.Listen && o.RetagLoneTrack,
+            TagUntaggedTracks = o.Listen && o.TagUntaggedTracks
         };
+
+        // What's heard changes this video: what's kept (step 2), or the tags of tracks that have none.
+        private static bool DependsOnHeard(PluginOptions o, ProbeResult probe) =>
+            ActsOnHeard(o) || (o.Listen && o.TagUntaggedTracks && AudioPlanner.HasOnlyUntaggedTracks(probe));
+
+        // Built once per run rather than per video: the title list compiles into regular expressions.
+        private PlannerSettings _settings;
+        private PluginOptions _settingsFor;
+
+        private PlannerSettings Settings(PluginOptions options)
+        {
+            if (!ReferenceEquals(options, _settingsFor))
+            {
+                // One pre-built string: a regex is full of braces.
+                _settings = SettingsFrom(options, entry => _log.Warn("AudioRemover: '" + entry + "' in 'Text to remove' " +
+                                                                     "took too long on a title; it's switched off for the rest of this run"));
+                _settingsFor = options;
+            }
+            return _settings;
+        }
 
         public async Task<Outcome> Process(BaseItem item, PluginOptions options, AudioRemoverState state, StateStore store, CancellationToken ct)
         {
@@ -73,8 +126,34 @@ namespace Emby.AudioRemover
 
             var before = await Probe(path, ct).ConfigureAwait(false);
             if (before == null) return Outcome.Failed;
+            var video = VideoName(item);
+            TrackNames.AddRange(before.streams.Where(s => s.Title.Length > 0).Select(s => (video, s.Title)));
 
-            var plan = AudioPlanner.Plan(before, SettingsFrom(options), path);
+            if (_whisper != null && options.Listen
+                && !await ListenWhereInDoubt(path, before, options, ct).ConfigureAwait(false)
+                && DependsOnHeard(options, before))
+            {
+                // It can't act on what it couldn't hear. Rather than decide by the tags it doubts (and save that as done),
+                // the video waits for a run where Whisper works.
+                _log.Info("AudioRemover: " + path + ": left for a later run - it needs listening, and Whisper isn't working (see the warning above)");
+                return Outcome.NothingToDo;
+            }
+
+            var plan = AudioPlanner.Plan(before, Settings(options), path);
+
+            // The one track a video has or keeps, tagged with a language you don't keep (no tag: left alone): heard (unless it
+            // already was), and its tag corrected when Whisper is sure - in the rewrite the video gets anyway, or one of its own.
+            var lone = _whisper != null && options.Listen && options.RetagLoneTrack ? AudioPlanner.LoneTrackToCheck(plan, Settings(options), path) : null;
+            if (lone != null)
+            {
+                if (lone.Heard == null && !await ListenTo(path, before, new List<ProbeStream> { lone }, options, ct).ConfigureAwait(false))
+                {
+                    _log.Info("AudioRemover: " + path + ": left for a later run - its lone track needs listening, and Whisper isn't working (see the warning above)");
+                    return Outcome.NothingToDo;
+                }
+                AudioPlanner.Retag(plan, lone);
+            }
+
             if (plan.LeftAlone != null)
             {
                 // One pre-built string: paths and titles may contain braces.
@@ -82,7 +161,11 @@ namespace Emby.AudioRemover
             }
             if (!plan.HasWork)
             {
-                if (plan.LeftAlone == null) _log.Debug("AudioRemover: nothing to do for {0}", path);
+                // One pre-built string: paths and names may contain braces.
+                if (plan.TitlesLeft.Count > 0)
+                    _log.Info("AudioRemover: " + path + ": only names to clean, so not rewritten ('Rewrite a video just for clean-up' is off)" +
+                              "\n    titles:  " + DescribeTitles(plan.TitlesLeft, "to clean"));
+                else if (plan.LeftAlone == null) _log.Debug("AudioRemover: nothing to do for {0}", path);
                 Totals.Add(plan);
                 if (!options.DryRun)
                 {
@@ -132,6 +215,73 @@ namespace Emby.AudioRemover
             }
         }
 
+        /// <summary>
+        /// Audio tracks to listen to: all of them, but only when there are at least two and none is tagged with a language
+        /// you keep (no language at all doesn't count). A video with one is decided by its tags, and a video's only track
+        /// always stays, whatever it sounds like, so there's nothing to decide.
+        /// </summary>
+        internal static List<ProbeStream> InDoubt(ProbeResult probe, PlannerSettings settings)
+        {
+            var audio = probe.streams.Where(s => s.IsAudio).ToList();
+            if (audio.Count < 2 || audio.Any(s => settings.KeepLanguages.Contains(s.Language))) return new List<ProbeStream>();
+            return audio;
+        }
+
+        /// <returns>False when the video needed listening and Whisper couldn't do it; true otherwise.</returns>
+        private Task<bool> ListenWhereInDoubt(string path, ProbeResult probe, PluginOptions options, CancellationToken ct) =>
+            ListenTo(path, probe, InDoubt(probe, Settings(options)), options, ct);
+
+        /// <returns>False when Whisper couldn't listen to the tracks; true otherwise (also when there are none).</returns>
+        private async Task<bool> ListenTo(string path, ProbeResult probe, List<ProbeStream> tracks, PluginOptions options, CancellationToken ct)
+        {
+            if (tracks.Count == 0) return true;
+
+            // Downloads Whisper the first time it's needed; extra safe also needs the bigger model for the 10-clip check.
+            var doubleCheck = DoubleChecks(options);
+            var checkModel = doubleCheck ? WhisperFiles.CheckModelFor(options.WhisperModel).Name : null;
+            var problem = await _whisper.Ensure(options.WhisperModel, ct).ConfigureAwait(false)
+                          ?? (checkModel != null ? await _whisper.Ensure(checkModel, ct).ConfigureAwait(false) : null);
+            if (problem != null) return WhisperNotWorking(problem);
+
+            var heard = tracks.Take(MostTracksHeard).ToList();
+            var listener = new LanguageListener(_runner, _whisper, options.WhisperModel, checkModel);
+            try
+            {
+                foreach (var s in heard)
+                {
+                    s.Heard = await listener.Listen(path, s, probe.DurationSeconds, ct).ConfigureAwait(false);
+                    if (!doubleCheck) continue;
+                    // Step 3. Before a language other than the tag changes the tag or what's kept, the bigger model has to
+                    // agree; and when the quick listen couldn't tell, the bigger model gets to try.
+                    if (s.Heard.Language == null)
+                        s.Heard = await listener.Identify(path, s, probe.DurationSeconds, s.Heard, ct).ConfigureAwait(false);
+                    else if (s.Heard.Language != s.Language)
+                        s.Heard = await listener.Confirm(path, s, probe.DurationSeconds, s.Heard, ct).ConfigureAwait(false);
+                }
+            }
+            catch (WhisperFailedException ex)
+            {
+                // Half an answer is no answer: the tracks already heard go back to their tags too.
+                foreach (var s in heard) s.Heard = null;
+                return WhisperNotWorking(ex.Message);
+            }
+
+            Totals.AddHeard(heard);
+            var notHeard = tracks.Skip(MostTracksHeard).Select(s => "#" + s.index).ToList();
+            // One pre-built string: paths may contain braces.
+            _log.Info("AudioRemover: listened to " + path + ":" + string.Join("", heard.Select(s => $"\n    #{s.index} {s.Language}: {s.Heard.Detail()}")) +
+                      (notHeard.Count > 0 ? $"\n    {string.Join(", ", notHeard)}: not listened to (only the first {MostTracksHeard} tracks are); their tags decide" : ""));
+            return true;
+        }
+
+        // Warned about once per run: every other video that needs listening runs into the same problem.
+        private bool WhisperNotWorking(string problem)
+        {
+            if (!_whisperProblemLogged) _log.Warn("AudioRemover: can't listen to audio: " + problem);
+            _whisperProblemLogged = true;
+            return false;
+        }
+
         // Logged as one pre-built string: paths and titles may contain braces that would break format placeholders.
         private void LogPlan(string path, AudioPlan plan, bool dryRun) => _log.Info(DescribePlan(path, plan, dryRun));
 
@@ -142,7 +292,27 @@ namespace Emby.AudioRemover
             return "AudioRemover " + (dryRun ? "[TEST MODE - no changes] " : "") + path +
                    "\n    keep:    " + Streams(plan.Keep) +
                    "\n    remove:  " + Streams(plan.Remove) +
-                   (plan.NewDefault != null ? "\n    default: " + plan.NewDefault.Describe() : "");
+                   (plan.NewDefault != null ? "\n    default: " + plan.NewDefault.Describe() + DefaultNote(plan) : "") +
+                   (plan.LanguageChanges.Count > 0
+                       ? "\n    tags:    " + string.Join(", ", plan.LanguageChanges.Select(c => $"#{c.Key} {plan.Keep.First(s => s.index == c.Key).Language} -> {c.Value}"))
+                       : "") +
+                   (plan.TitleChanges.Count > 0 ? "\n    titles:  " + DescribeTitles(plan.TitleChanges) : "");
+        }
+
+        // A download site puts the same ad on dozens of tracks: the count, then each different title once (three at most).
+        internal static string DescribeTitles(IList<TitleChange> changes, string what = "cleaned")
+        {
+            var different = changes.GroupBy(c => c.Before).Select(g => g.First()).ToList();
+            var shown = different.Take(3).Select(c => "\"" + c.Before + "\" -> " + (c.After.Length > 0 ? "\"" + c.After + "\"" : "none"));
+            return changes.Count + " " + what + ": " + string.Join(", ", shown) + (different.Count > 3 ? ", ..." : "");
+        }
+
+        // Which tracks lose the default flag, so the line says what changes even when the new default already has it.
+        private static string DefaultNote(AudioPlan plan)
+        {
+            var before = plan.Keep.Concat(plan.Remove).Where(s => s.IsDefault && s != plan.NewDefault).OrderBy(s => s.index).ToList();
+            if (before.Count > 0) return " (taken off " + string.Join(", ", before.Select(s => "#" + s.index)) + ")";
+            return plan.NewDefault.IsDefault ? "" : " (no default before)";
         }
 
         private async Task<ProbeResult> Probe(string path, CancellationToken ct)
@@ -191,7 +361,9 @@ namespace Emby.AudioRemover
             _libraryMonitor.ReportFileSystemChangeBeginning(path);
             try
             {
-                var result = await _runner.RunFfmpeg(FfmpegArgs.Remux(path, temp, muxer, removed, plan.DefaultChanges()), ct).ConfigureAwait(false);
+                var result = await _runner.RunFfmpeg(
+                    FfmpegArgs.Remux(path, temp, muxer, removed, plan.DefaultChanges(), plan.StreamTitles(), plan.FileTitle, plan.LanguageChanges),
+                    ct).ConfigureAwait(false);
                 var failure = !result.Success ? $"exit {result.ExitCode}: {result.StdErr}" : OutputChecks.TruncationMessage(result.StdErr);
                 if (failure != null)
                 {

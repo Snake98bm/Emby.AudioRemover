@@ -115,7 +115,16 @@ namespace Emby.AudioRemover
     internal sealed class SettingsPageView : IPluginPageView
     {
         public const string QuickSetupCommand = "AudioRemoverQuickSetup";
+        public const string ResetTitleAdsCommand = "AudioRemoverResetTitleAds";
+        public const string CheckTitleAdsCommand = "AudioRemoverCheckTitleAds";
+        public const string DownloadWhisperCommand = "AudioRemoverDownloadWhisper";
+        public const string FindTitleAdsCommand = "AudioRemoverFindTitleAds";
+        public const string AddSuggestionsCommand = "AudioRemoverAddSuggestions";
+
+        // One suggestion's switch on the list; its number on the list follows the prefix.
+        public const string SuggestionToggleCommandPrefix = "AudioRemoverSuggestionToggle:";
         public const string RunNowCommand = "AudioRemoverRunNow";
+        public const string StopCommand = "AudioRemoverStop";
         public const string SaveCommand = "AudioRemoverSave";
         public const string ShowLogCommand = "AudioRemoverShowLog";
         public const string RestoreCommand = "AudioRemoverRestore";
@@ -166,6 +175,49 @@ namespace Emby.AudioRemover
                     Save();
                     return Task.FromResult<IPluginUIView>(this);
 
+                case ResetTitleAdsCommand:
+                    Options.TitleAds = TitleCleaner.DefaultList;
+                    Save();
+                    return Task.FromResult<IPluginUIView>(this);
+
+                // Saved first, so the download is the model chosen on the page; it runs on while the page shows its progress.
+                case DownloadWhisperCommand:
+                    Save();
+                    _plugin.StartWhisperDownload(Options);
+                    Options.WhisperStatus = _plugin.WhisperStatusFor(Options);
+                    UIViewInfoChanged?.Invoke(this, new GenericEventArgs<IPluginUIView>(this));
+                    return Task.FromResult<IPluginUIView>(this);
+
+                // Saved first, so the search starts from the list and libraries on the page.
+                case FindTitleAdsCommand:
+                    Save();
+                    _plugin.StartFindingSuggestions(Options);
+                    Options.SuggestionsStatus = _plugin.SuggestionsStatus();
+                    UIViewInfoChanged?.Invoke(this, new GenericEventArgs<IPluginUIView>(this));
+                    return Task.FromResult<IPluginUIView>(this);
+
+                case AddSuggestionsCommand:
+                    var picked = _plugin.Suggestions.TakeSelected();
+                    if (picked.Count == 0)
+                    {
+                        Options.SuggestionsStatus = new StatusItem(Plugin.SuggestionsCaption, "Nothing added: no suggestion was switched on.", ItemStatus.Warning);
+                    }
+                    else
+                    {
+                        Options.TitleAds = Plugin.WithEntries(Options.TitleAds, picked);
+                        Save();
+                        Options.SuggestionsStatus = new StatusItem(Plugin.SuggestionsCaption,
+                            $"Added to the list: {string.Join(", ", picked)}. Runs use them from now on; test mode shows what they'd change.", ItemStatus.Succeeded);
+                    }
+                    UIViewInfoChanged?.Invoke(this, new GenericEventArgs<IPluginUIView>(this));
+                    return Task.FromResult<IPluginUIView>(this);
+
+                // Checks the list as it is in the box, saved or not.
+                case CheckTitleAdsCommand:
+                    Options.TitleAdsStatus = Plugin.CheckTitleAds(Options.TitleAds, Options.TitleAdsSample);
+                    UIViewInfoChanged?.Invoke(this, new GenericEventArgs<IPluginUIView>(this));
+                    return Task.FromResult<IPluginUIView>(this);
+
                 case SaveCommand:
                     Save();
                     return Task.FromResult<IPluginUIView>(this);
@@ -173,6 +225,12 @@ namespace Emby.AudioRemover
                 case RunNowCommand:
                     Save();
                     Options.RunStatus = _plugin.RunNow();
+                    UIViewInfoChanged?.Invoke(this, new GenericEventArgs<IPluginUIView>(this));
+                    return Task.FromResult<IPluginUIView>(this);
+
+                // Not saved: stopping shouldn't also keep half-made edits on the page.
+                case StopCommand:
+                    Options.RunStatus = _plugin.StopRun();
                     UIViewInfoChanged?.Invoke(this, new GenericEventArgs<IPluginUIView>(this));
                     return Task.FromResult<IPluginUIView>(this);
 
@@ -196,6 +254,15 @@ namespace Emby.AudioRemover
                     return Task.FromResult<IPluginUIView>(this);
 
                 default:
+                    if (commandId != null && commandId.StartsWith(SuggestionToggleCommandPrefix, StringComparison.Ordinal)
+                        && int.TryParse(commandId.Substring(SuggestionToggleCommandPrefix.Length), out var suggestion))
+                    {
+                        _plugin.Suggestions.Toggle(suggestion);
+                        var found = _plugin.Suggestions.Found;
+                        if (found != null) Options.SuggestionItems = Plugin.SuggestionItemsFor(found, _plugin.Suggestions.IsSelected);
+                        UIViewInfoChanged?.Invoke(this, new GenericEventArgs<IPluginUIView>(this));
+                        return Task.FromResult<IPluginUIView>(this);
+                    }
                     if (commandId != null && commandId.StartsWith(RestoreToggleCommandPrefix, StringComparison.Ordinal)
                         && int.TryParse(commandId.Substring(RestoreToggleCommandPrefix.Length), out var index))
                     {

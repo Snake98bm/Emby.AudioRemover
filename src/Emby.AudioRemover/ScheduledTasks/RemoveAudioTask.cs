@@ -11,6 +11,7 @@ using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.MediaEncoding;
 using MediaBrowser.Controller.Providers;
+using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.IO;
 using MediaBrowser.Model.Logging;
 using MediaBrowser.Model.Serialization;
@@ -37,7 +38,7 @@ namespace Emby.AudioRemover.ScheduledTasks
             _logDirectory = appPaths.LogDirectoryPath;
             _store = new StateStore(appPaths.PluginConfigurationsPath, json);
             var runner = FfmpegRunner.FromEmby(ffmpegManager);
-            _newProcessor = log => new MediaProcessor(runner, libraryMonitor, providerManager, fileSystem, json, log);
+            _newProcessor = log => new MediaProcessor(runner, libraryMonitor, providerManager, fileSystem, json, log, Plugin.Instance?.Whisper);
         }
 
         public string Name => "Remove foreign audio tracks";
@@ -88,7 +89,7 @@ namespace Emby.AudioRemover.ScheduledTasks
                 newVideos == null ? "" : " for new videos added to the library",
                 options.DryRun ? " in TEST MODE (no files will be changed)" : "", runLog.FileName);
             // One pre-built string: values such as paths may contain braces.
-            _log.Info("AudioRemover settings for this run:\n    " + string.Join("\n    ", options.DescribeSettings()));
+            _log.Info("AudioRemover settings for this run:\n    " + string.Join("\n    ", options.DescribeSettings(LibraryNames())));
 
             var problem = Validate(options);
             if (problem != null)
@@ -117,7 +118,14 @@ namespace Emby.AudioRemover.ScheduledTasks
                 Plugin.Instance.Save(options);
             }
 
-            var signature = MediaProcessor.SettingsFrom(options).Signature();
+            var settings = MediaProcessor.SettingsFrom(options);
+            if (options.CleanTitles)
+            {
+                // One pre-built string: a regex is full of braces.
+                foreach (var skipped in settings.Titles.Problems)
+                    _log.Warn("AudioRemover: 'Text to remove': " + skipped + ", so it's skipped");
+            }
+            var signature = settings.Signature();
             if (!options.DryRun && state.ApplySettingsSignature(signature))
             {
                 _log.Info("AudioRemover: settings changed since the last run - checking every video again (restored videos stay untouched)");
@@ -141,7 +149,7 @@ namespace Emby.AudioRemover.ScheduledTasks
             var changes = 0;
             for (var i = 0; i < items.Count; i++)
             {
-                cancellationToken.ThrowIfCancellationRequested();
+                if (cancellationToken.IsCancellationRequested) Stopped(i, items.Count, cancellationToken);
                 progress.Report(100.0 * i / items.Count);
 
                 Outcome outcome;
@@ -151,6 +159,7 @@ namespace Emby.AudioRemover.ScheduledTasks
                 }
                 catch (OperationCanceledException)
                 {
+                    Stopped(i, items.Count, cancellationToken);
                     throw;
                 }
                 catch (Exception ex)
@@ -187,6 +196,16 @@ namespace Emby.AudioRemover.ScheduledTasks
             runLog.Summary("AudioRemover finished: {0} changed, {1} would change (test mode), {2} nothing to do, {3} already done, {4} failed. Details: {5}",
                 counts[Outcome.Changed], counts[Outcome.WouldChange], counts[Outcome.NothingToDo], counts[Outcome.AlreadyDone], counts[Outcome.Failed], runLog.FileName);
             _log.Info(processor.Totals.Describe(options.DryRun));
+
+            if (options.CleanTitles)
+            {
+                var missed = TitleSuggestions.Find(processor.TrackNames, new TitleCleaner(options.TitleAds));
+                // One pre-built string: names may contain braces.
+                if (missed.Count > 0)
+                    _log.Info("AudioRemover: text in track names the 'Text to remove' list misses (in 2+ films or shows): " +
+                              string.Join(", ", missed.Take(10).Select(s => $"{s.Entry} ({s.Videos})")) + (missed.Count > 10 ? ", ..." : "") +
+                              " - add them with 'Find text to remove' on the settings page");
+            }
         }
 
         /// <returns>How many videos a run may change; 0 is no limit. A run for new videos does all of them.</returns>
@@ -200,19 +219,27 @@ namespace Emby.AudioRemover.ScheduledTasks
             return null;
         }
 
-        /// <param name="onlyThese">New videos only: still limited to the libraries and path filter.</param>
-        private List<BaseItem> FindVideos(PluginOptions options, ISet<string> onlyThese)
+        // Stop on the settings page or in Scheduled Tasks. The last line of the log says where it got to.
+        private void Stopped(int done, int total, CancellationToken cancellationToken)
         {
-            var selected = new HashSet<string>(options.Libraries.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries).Select(s => s.Trim()));
-            var folders = _libraryManager.GetVirtualFolders().Where(f => selected.Contains(f.ItemId)).ToList();
-            // The settings list only has the libraries' ids; this names them. One pre-built string: paths may contain braces.
-            _log.Info("AudioRemover libraries: " + (folders.Count == 0 ? "none found"
-                : string.Join(", ", folders.Select(f => $"{f.Name} ({string.Join("; ", f.Locations ?? Array.Empty<string>())})"))));
+            _log.Info("AudioRemover: stopped after {0} of {1} videos. What's done stays done; the next run goes on from there.", done, total);
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+
+        private Dictionary<string, string> LibraryNames() =>
+            _libraryManager.GetVirtualFolders()
+                .Where(f => f.ItemId != null)
+                .GroupBy(f => f.ItemId)
+                .ToDictionary(g => g.Key, g => g.First().Name);
+
+        /// <summary>Every video Emby has in these libraries: by their folders, or by the libraries themselves when that finds none.</summary>
+        internal static BaseItem[] LibraryVideos(ILibraryManager libraryManager, IList<VirtualFolderInfo> folders)
+        {
             var locations = folders.SelectMany(f => f.Locations ?? Array.Empty<string>()).Select(WithTrailingSeparator).ToArray();
 
             var items = locations.Length == 0
                 ? Array.Empty<BaseItem>()
-                : _libraryManager.GetItemList(new InternalItemsQuery
+                : libraryManager.GetItemList(new InternalItemsQuery
                 {
                     Recursive = true,
                     MediaTypes = new[] { "Video" },
@@ -226,7 +253,7 @@ namespace Emby.AudioRemover.ScheduledTasks
                 var ids = folders.Select(f => long.TryParse(f.ItemId, out var id) ? id : 0).Where(id => id != 0).ToArray();
                 if (ids.Length > 0)
                 {
-                    items = _libraryManager.GetItemList(new InternalItemsQuery
+                    items = libraryManager.GetItemList(new InternalItemsQuery
                     {
                         Recursive = true,
                         MediaTypes = new[] { "Video" },
@@ -235,8 +262,18 @@ namespace Emby.AudioRemover.ScheduledTasks
                     });
                 }
             }
+            return items;
+        }
 
-            return items
+        /// <param name="onlyThese">New videos only: still limited to the libraries and path filter.</param>
+        private List<BaseItem> FindVideos(PluginOptions options, ISet<string> onlyThese)
+        {
+            var selected = new HashSet<string>(options.Libraries.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries).Select(s => s.Trim()));
+            var folders = _libraryManager.GetVirtualFolders().Where(f => selected.Contains(f.ItemId)).ToList();
+            // The settings list only has the libraries' ids; this names them. One pre-built string: paths may contain braces.
+            _log.Info("AudioRemover libraries: " + (folders.Count == 0 ? "none found"
+                : string.Join(", ", folders.Select(f => $"{f.Name} ({string.Join("; ", f.Locations ?? Array.Empty<string>())})"))));
+            return LibraryVideos(_libraryManager, folders)
                 .Where(i => !i.IsShortcut && !string.IsNullOrEmpty(i.Path))
                 .Where(i => PathFilter.Matches(i.Path, options.OnlyPathContains))
                 // Before File.Exists, so a run for a few new videos doesn't touch every file on the share.

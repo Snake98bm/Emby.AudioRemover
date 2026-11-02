@@ -42,7 +42,10 @@ namespace Emby.AudioRemover.Core
 
         public Task<ProcessResult> RunFfprobe(IList<string> args, CancellationToken ct) => Run(_ffprobePath(), args, ct, null);
 
-        private async Task<ProcessResult> Run(string exe, IList<string> args, CancellationToken ct, string workingDirectory)
+        /// <summary>Another program (whisper-cli), without the environment Emby sets up for ffmpeg.</summary>
+        public Task<ProcessResult> RunProgram(string exe, IList<string> args, CancellationToken ct) => Run(exe, args, ct, null, withEnvironment: false);
+
+        private async Task<ProcessResult> Run(string exe, IList<string> args, CancellationToken ct, string workingDirectory, bool withEnvironment = true)
         {
             var psi = new ProcessStartInfo(exe, FfmpegArgs.ToCommandLine(args))
             {
@@ -56,7 +59,7 @@ namespace Emby.AudioRemover.Core
                 StandardOutputEncoding = new UTF8Encoding(false),
                 StandardErrorEncoding = new UTF8Encoding(false)
             };
-            foreach (var variable in _environment())
+            foreach (var variable in withEnvironment ? _environment() : Enumerable.Empty<KeyValuePair<string, string>>())
             {
                 psi.EnvironmentVariables[variable.Key] = variable.Value;
             }
