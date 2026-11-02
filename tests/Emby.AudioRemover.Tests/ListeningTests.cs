@@ -475,7 +475,8 @@ public sealed class ListeningTests : IDisposable
     {
         var files = WhisperFiles.All.Select(m => m.File).Append(WhisperFiles.ProgramForThisServer()).Where(f => f != null).ToList();
 
-        Assert.Equal(5, files.Count);
+        // The four models, and whisper.cpp itself where there's a ready-made download: on Linux it's installed by hand.
+        Assert.Equal(OperatingSystem.IsWindows() ? 5 : 4, files.Count);
         Assert.All(files, f =>
         {
             Assert.StartsWith("https://", f.Url);
