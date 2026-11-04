@@ -93,7 +93,8 @@ namespace Emby.AudioRemover.Core
                 SettingsSignature = SettingsSignature,
                 Processed = new Dictionary<string, FileStamp>(Processed, StringComparer.OrdinalIgnoreCase),
                 Restored = new List<string>(Restored),
-                Backups = new List<BackupEntry>(Backups)
+                // Copies: a test run may point them at moved videos, and that mustn't reach the real list.
+                Backups = Backups.Select(b => new BackupEntry { OriginalPath = b.OriginalPath, BackupPath = b.BackupPath, CreatedUtc = b.CreatedUtc }).ToList()
             };
             if (recheckEverything) copy.ForgetEverything();
             copy.ApplySettingsSignature(signature);

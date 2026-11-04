@@ -11,8 +11,8 @@ namespace Emby.AudioRemover
     /// so settings saved by earlier versions carry over.
     /// </summary>
     /// <remarks>
-    /// The tasks share one cached copy; the settings page always gets its own copy, because it fills in
-    /// display-only data (lists, log text) that must never reach the settings file.
+    /// The tasks share one cached copy; the settings page always edits its own copy. The sample name and the suggestions
+    /// box are never saved, and anything older versions saved for their page (lists, log text, help) is dropped on the next save.
     /// </remarks>
     public class OptionsStore
     {

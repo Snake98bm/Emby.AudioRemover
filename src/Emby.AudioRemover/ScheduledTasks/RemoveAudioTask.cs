@@ -143,6 +143,7 @@ namespace Emby.AudioRemover.ScheduledTasks
                     newVideos.Count, newVideos.Count == 1 ? "" : "s", items.Count);
             }
             _log.Info("AudioRemover: {0} video files to check", items.Count);
+            FollowMovedVideos(history, items, options.DryRun);
 
             var counts = Enum.GetValues(typeof(Outcome)).Cast<Outcome>().ToDictionary(o => o, o => 0);
             var limit = LimitFor(options, newVideosOnly: newVideos != null);
@@ -206,6 +207,20 @@ namespace Emby.AudioRemover.ScheduledTasks
                 if (options.SuggestDuringRuns) KeepSuggestions(processor.TrackNames, current);
             }
             _log.Info(processor.Totals.Describe(options.DryRun));
+        }
+
+        // Videos moved on the share keep their "already done" record, backup and "restored" mark. In test mode only the
+        // preview copy changes.
+        private void FollowMovedVideos(AudioRemoverState state, IList<BaseItem> items, bool dryRun)
+        {
+            var moves = MovedVideos.Reconnect(state, items.Select(i => i.Path).ToList(), File.Exists, MovedVideos.StampOrNull);
+            if (moves.Count == 0) return;
+            if (!dryRun) _store.Save(state);
+            // One pre-built string: paths may contain braces.
+            _log.Info($"AudioRemover: {moves.Count} video{(moves.Count == 1 ? "" : "s")} moved since an earlier run" +
+                      (dryRun ? " (test mode: a real run would note this)" : "") + "; their records and backups now follow them:" +
+                      string.Concat(moves.Take(10).Select(m => $"\n    {m.From} -> {m.To}")) +
+                      (moves.Count > 10 ? $"\n    and {moves.Count - 10} more" : ""));
         }
 
         // Built up across runs for "Suggested text" on the settings page. Only suggestions: a problem never fails the run.

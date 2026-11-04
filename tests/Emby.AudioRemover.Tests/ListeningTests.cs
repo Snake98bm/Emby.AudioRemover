@@ -593,8 +593,7 @@ public sealed class ListeningTests : IDisposable
     [Fact]
     public void The_download_button_says_where_whisper_comes_from()
     {
-        var description = typeof(PluginOptions).GetProperty(nameof(PluginOptions.DownloadWhisperButton))!
-            .GetCustomAttributes(typeof(System.ComponentModel.DescriptionAttribute), false).Cast<System.ComponentModel.DescriptionAttribute>().Single().Description;
+        var description = PluginOptions.WhisperDownloadNote;
 
         Assert.Contains("github.com/ggml-org/whisper.cpp (v1.9.5)", description);
         Assert.Contains("huggingface.co/ggerganov/whisper.cpp", description);

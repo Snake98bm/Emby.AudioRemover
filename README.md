@@ -10,7 +10,7 @@ It's the audio twin of [SubRemover](https://github.com/Snake98bm/Emby.Subremover
 - **Never leaves a video silent** – when none of a video's main audio tracks is in a language you keep (a foreign film with only its own language), every track stays and the log says so.
 - **Safe replace** – writes a new file, then checks it has the same video and subtitle tracks, the expected audio tracks and the same length. If any check fails, the original stays untouched.
 - **Backups** – the original is kept as `movie.mkv.audioremover.bak` next to the video, or copied to a backup folder you choose. Old backups can be deleted automatically after a number of days.
-- **Undo** – the **Restore originals from backups** button on the settings page lists every video that has a backup; select the ones to put back. The *Restore* scheduled task restores the videos matching *Only process paths containing* instead.
+- **Undo** – the **Restore originals from backups** button on the settings page lists every video that has a backup; select the ones to put back. The *Restore* scheduled task restores the videos matching *Only process paths containing* instead. Videos moved on the share, even a whole library, are found again by file name on the next run, and their backups and records follow them.
 - **Test on a few files first** – *Max videos per run* and *Only process paths containing* let you try it on a single movie. Separate several titles with `;`, e.g. `My Movie (2020); My Show - S01E02`.
 - Optional: always keep the first audio track (usually the film's original language), so a foreign film keeps its own audio next to the dub.
 - Optional: remove commentary tracks and audio description tracks, even in languages you keep (only while a main track stays).
@@ -19,7 +19,7 @@ It's the audio twin of [SubRemover](https://github.com/Snake98bm/Emby.Subremover
 - Optional, with listening on: fix language tags on their own. **Check and retag a lone track** corrects a video's only track when it's tagged with a language you don't keep (a "Dutch" track that's English); **Tag tracks that have no language** tags a video's tracks when it has two or more and none has a tag (often a stereo and a 5.1 copy of the same sound). Each rewrites the file once; a single untagged track is left alone.
 - Optional: clean up track names. Download sites put their name on every track (`English - SomeSite.com`) and Emby shows it in the audio and subtitle menus; this takes it out. What's removed is an editable list on the settings page: `*.com` for any website ending in .com, a word such as a release group's tag, or a regular expression between slashes (`/GROUP\.\w+/`), with a button to check it and one to reset it to the default. A name that's only an ad, or only the download's file or release name (`My.Movie.2020.1080p.WEBRip.x265-GROUP.mkv`), is removed, so Emby shows the track's language and format instead. The file's own title can be cleaned too (off by default). Names are cleaned when a video is rewritten for its audio anyway, or, if you choose, a video is rewritten just for that. Text that keeps turning up in track names across different films and shows is suggested in an editable **Suggested text** box that every run adds to (countries and regions in language labels such as `English (United States)` or `pt-BR` are left alone); text added from it can be cleaned out of the names it was found in straight away.
 - Optional: process new videos as Emby adds them. A few minutes after the last one arrives, one run checks just the new videos with your settings (Test mode included), so a whole season gets one run and one log.
-- Its own settings page with **Run now**, run status and a log viewer (open a log in a new window or download it), plus an entry in the server sidebar under **Advanced** (can be turned off).
+- Its own settings page with tabs (**Run**, **Audio**, **Listen (Whisper)**, **Track names**, **Backups**, **Logs**), each explaining its settings at the bottom: **Run now** and **Stop**, run status, a restore list and a log viewer (open a log in a new window or download it), plus an entry in the server sidebar under **Advanced** (can be turned off).
 
 ## How track names are cleaned
 
@@ -64,8 +64,8 @@ A name with nothing to clean is never touched, and the run log lists every name 
    docker cp Emby.AudioRemover.dll emby:/config/plugins/
    ```
 3. Start Emby (Docker: `docker start emby`) and press **Ctrl+F5** in your browser so the menus reload.
-4. Go to **Settings → Plugins → AudioRemover** (or **AudioRemover** under **Advanced** in the server sidebar). Pick your libraries and languages, or click **Quick setup: English + no language**, and leave **Test mode** on.
-5. Click **Run now**. The status under the button shows progress, and its log appears under **Log files** at the bottom of the page.
+4. Go to **Settings → Plugins → AudioRemover** (or **AudioRemover** under **Advanced** in the server sidebar). On the **Run** tab pick your libraries and leave **Test mode** on; on the **Audio** tab pick your languages, or click **Quick setup: English + no language**. Click **Save**.
+5. Click **Run now**. The status on the **Run** tab shows progress, and its log appears on the **Logs** tab.
 6. When the log looks right, turn Test mode off, set **Max videos to change per run** to a few, and run it again. Check those files in Emby before letting it do the rest.
 
 The task is also under **Settings → Scheduled Tasks → AudioRemover**, where you can give it a schedule. Each run writes its own `audioremover-….txt` log in Emby's log folder; the newest 30 are kept.

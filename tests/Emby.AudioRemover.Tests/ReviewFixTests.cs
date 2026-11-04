@@ -145,48 +145,42 @@ public sealed class ReviewFixTests : IDisposable
     {
         var store = new OptionsStore(_dir, "AudioRemover", new TestJsonSerializer(), new NullLogger());
         var forPage = store.GetCopy();
-        forPage.LogText = "a very big log text";
-        forPage.LanguageChoices.Add(new Emby.Web.GenericEdit.Common.EditorSelectOption { Value = "eng", Name = "English (eng)" });
         forPage.KeepLanguages = "eng,spa";
         forPage.TitleAdsSample = "a title to try";
+        forPage.SuggestedText = "GRP";
 
-        Assert.Null(store.Get().LogText);
+        Assert.Null(store.Get().TitleAdsSample);
 
         store.Save(forPage);
 
         var json = File.ReadAllText(store.FilePath);
-        Assert.DoesNotContain("a very big log text", json);
         Assert.DoesNotContain("a title to try", json);
-        Assert.DoesNotContain("English (eng)", json);
+        Assert.DoesNotContain("GRP", json);
         Assert.Equal("eng,spa", new OptionsStore(_dir, "AudioRemover", new TestJsonSerializer(), new NullLogger()).Get().KeepLanguages);
-        Assert.Equal("a very big log text", forPage.LogText);
+        Assert.Equal("a title to try", forPage.TitleAdsSample);
     }
 
     [Fact]
-    public void Display_data_already_in_an_old_settings_file_is_dropped_on_load()
+    public void What_older_versions_saved_for_their_page_is_dropped_on_the_next_save()
     {
-        var old = new PluginOptions { LogText = "leaked log", KeepLanguages = "eng" };
-        File.WriteAllText(Path.Combine(_dir, "AudioRemover.json"), new TestJsonSerializer().SerializeToString(old));
+        // Older versions saved log text, choice lists and help with the settings.
+        File.WriteAllText(Path.Combine(_dir, "AudioRemover.json"), new TestJsonSerializer().SerializeToString(new
+        {
+            KeepLanguages = "eng,spa",
+            LogText = "a very big log text",
+            LanguageChoices = new[] { new { Value = "eng", Name = "English (eng)" } },
+            Help01 = new { Caption = "Logs", StatusText = "old help" }
+        }));
 
-        var loaded = new OptionsStore(_dir, "AudioRemover", new TestJsonSerializer(), new NullLogger()).Get();
+        var store = new OptionsStore(_dir, "AudioRemover", new TestJsonSerializer(), new NullLogger());
+        Assert.Equal("eng,spa", store.Get().KeepLanguages);
 
-        Assert.Null(loaded.LogText);
-        Assert.Equal("eng", loaded.KeepLanguages);
-    }
+        store.Save(store.GetCopy());
 
-    [Fact]
-    public void Help_saved_by_an_older_version_is_never_shown()
-    {
-        // Older versions saved the help with the settings; with entries added since, a slot held another setting's help.
-        var logs = SettingsHelp.Item(SettingsHelp.Entries.Length - 1);
-        File.WriteAllText(Path.Combine(_dir, "AudioRemover.json"),
-            new TestJsonSerializer().SerializeToString(new { KeepLanguages = "eng", Help01 = logs, Help02 = logs }));
-
-        var loaded = new OptionsStore(_dir, "AudioRemover", new TestJsonSerializer(), new NullLogger()).Get();
-
-        Assert.Equal("eng", loaded.KeepLanguages);
-        Assert.Equal(SettingsHelp.Entries[0].Setting, loaded.Help01.Caption);
-        Assert.Equal(SettingsHelp.Entries[1].Setting, loaded.Help02.Caption);
+        var json = File.ReadAllText(store.FilePath);
+        Assert.DoesNotContain("a very big log text", json);
+        Assert.DoesNotContain("English (eng)", json);
+        Assert.DoesNotContain("old help", json);
     }
 
     // ---- 6. leftovers from an interrupted run are cleaned up

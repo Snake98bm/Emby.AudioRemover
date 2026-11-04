@@ -5,7 +5,7 @@
     <LangVersion>latest</LangVersion>
     <RootNamespace>Emby.AudioRemover</RootNamespace>
     <AssemblyName>Emby.AudioRemover</AssemblyName>
-    <Version>0.5.1</Version>
+    <Version>0.5.2</Version>
     <Authors>Snake98bm</Authors>
     <Description>Emby plugin that removes foreign-language audio tracks from video files.</Description>
     <!-- Override on the command line to check against another Emby release: -p:EmbySdkVersion=4.10.0.24-beta2 -->
@@ -23,7 +23,10 @@
   </ItemGroup>
 
   <ItemGroup>
-    <EmbeddedResource Include="thumb.png" LogicalName="Emby.AudioRemover.thumb.png" />  </ItemGroup>
+    <EmbeddedResource Include="thumb.png" LogicalName="Emby.AudioRemover.thumb.png" />
+    <EmbeddedResource Include="Configuration/settings.html" LogicalName="Emby.AudioRemover.Configuration.settings.html" />
+    <EmbeddedResource Include="Configuration/settings.js" LogicalName="Emby.AudioRemover.Configuration.settings.js" />
+  </ItemGroup>
 
   <ItemGroup>
     <InternalsVisibleTo Include="Emby.AudioRemover.Tests" />
