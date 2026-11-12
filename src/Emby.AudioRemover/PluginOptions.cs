@@ -212,6 +212,10 @@ namespace Emby.AudioRemover
         [Description("Checks videos Emby adds, a few minutes after they arrive.")]
         public bool ProcessNewVideos { get; set; }
 
+        [DisplayName("Wait until SubRemover has checked a video")]
+        [Description("Leaves a video unchanged until SubRemover has been through it, so SubRemover can first download subtitles that match the original file (hash-matched). No effect without SubRemover.")]
+        public bool WaitForSubRemover { get; set; }
+
         [DisplayName("Show in the server sidebar menu")]
         [Description("Also lists AudioRemover in the server sidebar.")]
         public bool ShowInSidebar { get; set; } = true;

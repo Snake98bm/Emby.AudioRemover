@@ -64,6 +64,7 @@ namespace Emby.AudioRemover
                     F(nameof(PluginOptions.MaxItemsPerRun)),
                     F(nameof(PluginOptions.OnlyPathContains)),
                     F(nameof(PluginOptions.ProcessNewVideos)),
+                    F(nameof(PluginOptions.WaitForSubRemover)),
                     H("Advanced"),
                     F(nameof(PluginOptions.ShowInSidebar)),
                     F(nameof(PluginOptions.ReprocessAll))

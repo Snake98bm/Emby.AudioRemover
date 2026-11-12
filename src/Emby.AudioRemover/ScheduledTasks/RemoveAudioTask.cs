@@ -43,7 +43,8 @@ namespace Emby.AudioRemover.ScheduledTasks
             // SubRemover's settings are read at the start of each run, so a change there counts from the next run.
             _newProcessor = log => new MediaProcessor(runner, libraryMonitor, providerManager, fileSystem, json, log, Plugin.Instance?.Whisper,
                 l => new HashMatchedSubtitles(subtitleManager, hashes, l, "AudioRemover"),
-                SubRemoverSettings.Read(appPaths.PluginConfigurationsPath, json));
+                SubRemoverSettings.Read(appPaths.PluginConfigurationsPath, json),
+                () => SubRemoverChecks.Read(appPaths.PluginConfigurationsPath, json));
         }
 
         public string Name => "Remove foreign audio tracks";
@@ -181,6 +182,15 @@ namespace Emby.AudioRemover.ScheduledTasks
                     _log.Info("AudioRemover: reached the limit of {0} videos per run", limit);
                     break;
                 }
+            }
+
+            if (processor.WaitingForSubRemover.Count > 0)
+            {
+                _log.Info("AudioRemover: {0} video{1} {2} for SubRemover to check {3} first", processor.WaitingForSubRemover.Count,
+                    processor.WaitingForSubRemover.Count == 1 ? "" : "s", options.DryRun ? "would wait" : "wait",
+                    processor.WaitingForSubRemover.Count == 1 ? "it" : "them");
+                // New videos get another go soon; the rest wait for the next full run.
+                if (newVideos != null && !options.DryRun) NewVideoWatcher.RetryLater(processor.WaitingForSubRemover);
             }
 
             CleanOldBackups(options, state);

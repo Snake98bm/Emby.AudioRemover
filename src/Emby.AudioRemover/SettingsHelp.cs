@@ -30,6 +30,13 @@ namespace Emby.AudioRemover
                 "Only videos whose full path contains this text are checked; capitals don't matter. 'My Movie (2020)' matches only that " +
                 "movie, '\\Movies\\' only your Movies folder. For several, separate them with ';' (not commas, titles contain those): " +
                 "'My Movie (2020); My Show - S01E02'. Leave empty for everything. Restore doesn't use it."),
+            (SettingsTabId.Run, "Wait until SubRemover has checked a video",
+                "Changing a video changes its hash, and subtitle sites (OpenSubtitles) find exact-match subtitles by the hash of the " +
+                "original file. With this on, AudioRemover leaves a video alone until SubRemover has checked it (or its hash-matched " +
+                "subtitles were looked up), so SubRemover's 'Download hash-matched subtitles before changing a video' goes first. A new " +
+                "video that has to wait is tried again every 10 minutes for a day; after that the next full run gets to it. Without " +
+                "this, AudioRemover does that look-up itself when it gets to a video first. Test mode only logs which videos would wait. " +
+                "No effect when SubRemover isn't installed."),
             (SettingsTabId.Run, "Process new videos as they're added",
                 "When Emby adds a video (real-time monitoring or a library scan), AudioRemover checks it with these same settings, " +
                 "Test mode included. It waits until no new video has come in for 3 minutes, so a whole season is one run with one log. " +

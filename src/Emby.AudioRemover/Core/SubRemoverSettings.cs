@@ -41,18 +41,38 @@ namespace Emby.AudioRemover.Core
             (KeepLanguages ?? string.Empty).Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries)
                 .Select(l => Core.Languages.Normalize(l.Trim()));
 
-        /// <returns>Null when SubRemover isn't installed or its settings can't be read: AudioRemover then leaves it alone.</returns>
-        public static SubRemoverSettings Read(string configurationsFolder, IJsonSerializer json)
+        /// <summary>
+        /// SubRemover's settings file is there but couldn't be read (SubRemover may have been saving it): whether a video
+        /// needs a look-up first isn't known, so videos are left unchanged for the next run.
+        /// </summary>
+        public bool Unreadable { get; private set; }
+
+        /// <param name="subRemoverLoaded">Whether SubRemover is installed in this Emby; null: look it up.</param>
+        /// <returns>
+        /// Null when SubRemover isn't installed. SubRemover's defaults (look-up on) when it is but hasn't saved its settings
+        /// yet. <see cref="Unreadable"/> when the file can't be read.
+        /// </returns>
+        public static SubRemoverSettings Read(string configurationsFolder, IJsonSerializer json, bool? subRemoverLoaded = null)
         {
-            try
+            var path = Path.Combine(configurationsFolder, FileName);
+            for (var attempt = 0; attempt < 3; attempt++)
             {
-                var path = Path.Combine(configurationsFolder, FileName);
-                return File.Exists(path) ? json.DeserializeFromFile<SubRemoverSettings>(path) : null;
+                try
+                {
+                    if (!File.Exists(path))
+                        return (subRemoverLoaded ?? IsSubRemoverLoaded()) ? new SubRemoverSettings { OptionsVersion = 2 } : null;
+                    var settings = json.DeserializeFromFile<SubRemoverSettings>(path);
+                    if (settings != null) return settings;
+                }
+                catch (Exception)
+                {
+                }
+                System.Threading.Thread.Sleep(300);
             }
-            catch (Exception)
-            {
-                return null;
-            }
+            return new SubRemoverSettings { Unreadable = true };
         }
+
+        private static bool IsSubRemoverLoaded() =>
+            AppDomain.CurrentDomain.GetAssemblies().Any(a => string.Equals(a.GetName().Name, "Emby.Subremover", StringComparison.OrdinalIgnoreCase));
     }
 }

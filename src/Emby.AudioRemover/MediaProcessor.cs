@@ -49,13 +49,21 @@ namespace Emby.AudioRemover
 
         private readonly HashMatchedSubtitles _hashSubtitles;
         private readonly SubRemoverSettings _subRemoverSettings;
+        private readonly Lazy<SubRemoverChecks> _subRemoverChecks;
+        private bool _checksLogged;
 
+        /// <summary>Videos left for later by "Wait until SubRemover has checked a video" (or that would be, in test mode).</summary>
+        public List<string> WaitingForSubRemover { get; } = new List<string>();
+
+        /// <param name="subRemoverChecks">Reads what SubRemover has checked; only called when the wait option is on.</param>
         public MediaProcessor(FfmpegRunner runner, ILibraryMonitor libraryMonitor, IProviderManager providerManager,
             IFileSystem fileSystem, IJsonSerializer json, ILogger log, WhisperInstall whisper = null,
-            Func<ILogger, HashMatchedSubtitles> hashSubtitles = null, SubRemoverSettings subRemoverSettings = null)
+            Func<ILogger, HashMatchedSubtitles> hashSubtitles = null, SubRemoverSettings subRemoverSettings = null,
+            Func<SubRemoverChecks> subRemoverChecks = null)
         {
             _hashSubtitles = hashSubtitles?.Invoke(log);
             _subRemoverSettings = subRemoverSettings;
+            _subRemoverChecks = subRemoverChecks == null ? null : new Lazy<SubRemoverChecks>(subRemoverChecks);
             _runner = runner;
             _libraryMonitor = libraryMonitor;
             _providerManager = providerManager;
@@ -139,6 +147,7 @@ namespace Emby.AudioRemover
 
             var stamp = FileStamp.Of(path);
             if (state.Processed.TryGetValue(path, out var done) && done.Matches(stamp)) return Outcome.AlreadyDone;
+            if (MustWaitForSubRemover(path, options, state)) return Outcome.NothingToDo;
 
             var before = await Probe(path, ct).ConfigureAwait(false);
             if (before == null) return Outcome.Failed;
@@ -193,6 +202,12 @@ namespace Emby.AudioRemover
 
             // SubRemover's "Download hash-matched subtitles before changing a video": the rewrite changes the hash, so when
             // AudioRemover gets to a video first, it does that step.
+            if (_subRemoverSettings?.Unreadable == true && !options.DryRun && IsOriginal(path, state))
+            {
+                _log.Info("AudioRemover: " + path + ": left for a later run - SubRemover's settings couldn't be read, so it isn't known " +
+                          "whether hash-matched subtitles should be downloaded first");
+                return Outcome.NothingToDo;
+            }
             if (_hashSubtitles != null && _subRemoverSettings?.DownloadsHashMatched == true && IsOriginal(path, state)
                 && !_hashSubtitles.AlreadyChecked(path))
             {
@@ -366,6 +381,30 @@ namespace Emby.AudioRemover
         /// SubRemover's temporary file next to the video, still being written: it's rewriting that video at this moment.
         /// One left behind by a crash stops being written to, so it doesn't block the video for good.
         /// </summary>
+        /// <summary>
+        /// "Wait until SubRemover has checked a video": true (and logged) for an original video SubRemover hasn't been
+        /// through and whose hash-matched subtitles nobody has looked up yet.
+        /// </summary>
+        private bool MustWaitForSubRemover(string path, PluginOptions options, AudioRemoverState state)
+        {
+            // No SubRemover in this Emby: nothing to wait for.
+            if (!options.WaitForSubRemover || _subRemoverChecks == null || _subRemoverSettings == null) return false;
+            var checks = _subRemoverChecks.Value;
+            if (!_checksLogged)
+            {
+                _checksLogged = true;
+                _log.Info(checks.Unreadable
+                    ? "AudioRemover: SubRemover's record of checked videos couldn't be read, so videos it hasn't changed wait for a later run"
+                    : $"AudioRemover: waiting for SubRemover where needed; it has checked {checks.Count} videos so far");
+            }
+            if (checks.HasChecked(path) || !IsOriginal(path, state) || (_hashSubtitles?.AlreadyChecked(path) ?? false)) return false;
+
+            WaitingForSubRemover.Add(path);
+            _log.Info("AudioRemover: " + path + ": " + (options.DryRun ? "would wait" : "left for later") +
+                      " - SubRemover hasn't checked it yet ('Wait until SubRemover has checked a video')");
+            return true;
+        }
+
         /// <summary>
         /// Not yet rewritten by AudioRemover (no backup of it) or SubRemover (no backup beside it): its hash is still the
         /// one subtitle sites know.

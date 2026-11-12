@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using Emby.AudioRemover.Core;
@@ -21,6 +22,44 @@ namespace Emby.AudioRemover
         public static readonly TimeSpan WaitAfterLastVideo = TimeSpan.FromMinutes(3);
         private static readonly TimeSpan WaitWhileBusy = TimeSpan.FromMinutes(2);
 
+        // "Wait until SubRemover has checked a video": new videos it left are tried again this often, for this long.
+        internal static readonly TimeSpan RetryForSubRemover = TimeSpan.FromMinutes(10);
+        internal static readonly TimeSpan GiveUpWaitingAfter = TimeSpan.FromDays(1);
+
+        private static NewVideoWatcher _instance;
+        private readonly Dictionary<string, DateTime> _firstWaited = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// New videos a run left for SubRemover: another run for them in 10 minutes. After a day of waiting a video is
+        /// dropped from these runs (logged); the next full run still gets to it.
+        /// </summary>
+        internal static void RetryLater(IEnumerable<string> paths) => _instance?.Retry(paths);
+
+        private void Retry(IEnumerable<string> paths)
+        {
+            var now = DateTime.UtcNow;
+            var again = new List<string>();
+            lock (_firstWaited)
+            {
+                foreach (var path in paths)
+                {
+                    if (!_firstWaited.TryGetValue(path, out var since)) _firstWaited[path] = since = now;
+                    if (now - since < GiveUpWaitingAfter) again.Add(path);
+                    else
+                    {
+                        _firstWaited.Remove(path);
+                        _log.Info($"AudioRemover: {path} waited a day for SubRemover; the next full run gets to it");
+                    }
+                }
+                // Forget videos that stopped waiting long ago.
+                foreach (var old in _firstWaited.Where(p => now - p.Value > GiveUpWaitingAfter + GiveUpWaitingAfter).Select(p => p.Key).ToList())
+                    _firstWaited.Remove(old);
+            }
+            if (again.Count == 0) return;
+            foreach (var path in again) _waiting.Add(path);
+            StartTimer(RetryForSubRemover);
+        }
+
         private readonly ILibraryManager _libraryManager;
         private readonly ITaskManager _taskManager;
         private readonly ILogger _log;
@@ -33,6 +72,7 @@ namespace Emby.AudioRemover
             _libraryManager = libraryManager;
             _taskManager = taskManager;
             _log = logManager.GetLogger("AudioRemover");
+            _instance = this;
         }
 
         public void Run() => _libraryManager.ItemAdded += OnItemAdded;

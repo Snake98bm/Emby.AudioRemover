@@ -36,6 +36,72 @@ public class HashMatchedSubtitlesTests
         }
     }
 
+    [Fact]
+    public void Reads_which_videos_SubRemover_has_checked()
+    {
+        var folder = NewFolder();
+        try
+        {
+            // SubRemover hasn't run yet: nothing is checked, so every video waits.
+            var none = SubRemoverChecks.Read(folder, new TestJsonSerializer());
+            Assert.False(none.Unreadable);
+            Assert.False(none.HasChecked(@"D:\Movies\My Movie (2020)\My Movie (2020).mkv"));
+
+            File.WriteAllText(Path.Combine(folder, SubRemoverChecks.FileName),
+                "{\"Processed\":{\"D:\\\\Movies\\\\My Movie (2020)\\\\My Movie (2020).mkv\":{\"Size\":5,\"LastWriteTicksUtc\":1}}," +
+                "\"Backups\":[{\"OriginalPath\":\"D:\\\\Shows\\\\My Show\\\\S01E01.mkv\",\"BackupPath\":\"x\"}]," +
+                "\"Restored\":[\"D:\\\\Movies\\\\Other (2021)\\\\Other (2021).mkv\"],\"MadeFiles\":[],\"AdRulesSignature\":\"a\"}");
+            var checks = SubRemoverChecks.Read(folder, new TestJsonSerializer());
+            Assert.Equal(3, checks.Count);
+            Assert.True(checks.HasChecked(@"d:\movies\my movie (2020)\my movie (2020).mkv"));
+            Assert.True(checks.HasChecked(@"D:\Shows\My Show\S01E01.mkv"));
+            Assert.True(checks.HasChecked(@"D:\Movies\Other (2021)\Other (2021).mkv"));
+            Assert.False(checks.HasChecked(@"D:\Shows\My Show\S01E02.mkv"));
+
+            File.WriteAllText(Path.Combine(folder, SubRemoverChecks.FileName), "{ broken");
+            var broken = SubRemoverChecks.Read(folder, new TestJsonSerializer());
+            Assert.True(broken.Unreadable);
+            Assert.False(broken.HasChecked(@"D:\Shows\My Show\S01E01.mkv"));
+        }
+        finally
+        {
+            Directory.Delete(folder, true);
+        }
+    }
+
+    [Fact]
+    public void SubRemover_installed_without_a_settings_file_means_its_defaults()
+    {
+        var folder = NewFolder();
+        try
+        {
+            Assert.Null(SubRemoverSettings.Read(folder, new TestJsonSerializer(), subRemoverLoaded: false));
+            var settings = SubRemoverSettings.Read(folder, new TestJsonSerializer(), subRemoverLoaded: true);
+            Assert.True(settings.DownloadsHashMatched);
+            Assert.False(settings.Unreadable);
+            Assert.Equal(new[] { "eng" }, settings.KeptLanguages().ToArray());
+        }
+        finally
+        {
+            Directory.Delete(folder, true);
+        }
+    }
+
+    [Fact]
+    public void Settings_that_cant_be_read_are_marked_so_videos_wait()
+    {
+        var folder = NewFolder();
+        try
+        {
+            File.WriteAllText(Path.Combine(folder, SubRemoverSettings.FileName), "{ not json");
+            Assert.True(SubRemoverSettings.Read(folder, new TestJsonSerializer(), subRemoverLoaded: true).Unreadable);
+        }
+        finally
+        {
+            Directory.Delete(folder, true);
+        }
+    }
+
     [Theory]
     [InlineData("{\"DownloadHashMatchedSubtitles\":false,\"OptionsVersion\":1}", true)]
     [InlineData("{\"DownloadHashMatchedSubtitles\":false,\"OptionsVersion\":2}", false)]
