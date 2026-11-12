@@ -11,6 +11,7 @@ using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.MediaEncoding;
 using MediaBrowser.Controller.Providers;
+using MediaBrowser.Controller.Subtitles;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.IO;
 using MediaBrowser.Model.Logging;
@@ -30,7 +31,7 @@ namespace Emby.AudioRemover.ScheduledTasks
 
         public RemoveAudioTask(ILibraryManager libraryManager, ILogManager logManager, IFfmpegManager ffmpegManager,
             ILibraryMonitor libraryMonitor, IProviderManager providerManager, IFileSystem fileSystem,
-            IJsonSerializer json, IApplicationPaths appPaths)
+            IJsonSerializer json, IApplicationPaths appPaths, ISubtitleManager subtitleManager)
         {
             _libraryManager = libraryManager;
             _embyLog = logManager.GetLogger("AudioRemover");
@@ -38,7 +39,11 @@ namespace Emby.AudioRemover.ScheduledTasks
             _logDirectory = appPaths.LogDirectoryPath;
             _store = new StateStore(appPaths.PluginConfigurationsPath, json);
             var runner = FfmpegRunner.FromEmby(ffmpegManager);
-            _newProcessor = log => new MediaProcessor(runner, libraryMonitor, providerManager, fileSystem, json, log, Plugin.Instance?.Whisper);
+            var hashes = new OriginalHashStore(appPaths.PluginConfigurationsPath, json);
+            // SubRemover's settings are read at the start of each run, so a change there counts from the next run.
+            _newProcessor = log => new MediaProcessor(runner, libraryMonitor, providerManager, fileSystem, json, log, Plugin.Instance?.Whisper,
+                l => new HashMatchedSubtitles(subtitleManager, hashes, l, "AudioRemover"),
+                SubRemoverSettings.Read(appPaths.PluginConfigurationsPath, json));
         }
 
         public string Name => "Remove foreign audio tracks";

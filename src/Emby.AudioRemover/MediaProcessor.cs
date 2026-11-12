@@ -47,9 +47,15 @@ namespace Emby.AudioRemover
         internal static string VideoName(BaseItem item) =>
             item is Episode episode && !string.IsNullOrEmpty(episode.SeriesName) ? episode.SeriesName : item.Name ?? System.IO.Path.GetFileNameWithoutExtension(item.Path);
 
+        private readonly HashMatchedSubtitles _hashSubtitles;
+        private readonly SubRemoverSettings _subRemoverSettings;
+
         public MediaProcessor(FfmpegRunner runner, ILibraryMonitor libraryMonitor, IProviderManager providerManager,
-            IFileSystem fileSystem, IJsonSerializer json, ILogger log, WhisperInstall whisper = null)
+            IFileSystem fileSystem, IJsonSerializer json, ILogger log, WhisperInstall whisper = null,
+            Func<ILogger, HashMatchedSubtitles> hashSubtitles = null, SubRemoverSettings subRemoverSettings = null)
         {
+            _hashSubtitles = hashSubtitles?.Invoke(log);
+            _subRemoverSettings = subRemoverSettings;
             _runner = runner;
             _libraryMonitor = libraryMonitor;
             _providerManager = providerManager;
@@ -183,6 +189,18 @@ namespace Emby.AudioRemover
                     store.Save(state);
                 }
                 return Outcome.NothingToDo;
+            }
+
+            // SubRemover's "Download hash-matched subtitles before changing a video": the rewrite changes the hash, so when
+            // AudioRemover gets to a video first, it does that step.
+            if (_hashSubtitles != null && _subRemoverSettings?.DownloadsHashMatched == true && IsOriginal(path, state)
+                && !_hashSubtitles.AlreadyChecked(path))
+            {
+                var languages = HashMatchedSubtitles.LanguagesToSearch(_subRemoverSettings.KeptLanguages(),
+                    before.streams.Where(s => SubRemoverSettings.IsTextSubtitle(s.codec_type, s.codec_name)).Select(s => s.Language),
+                    SubtitleFileLanguages(path));
+                if ((await _hashSubtitles.Lookup(item, languages, options.DryRun ? HashMode.LogOnly : HashMode.Download, ct, _subRemoverSettings.HashDownloadsPerDay).ConfigureAwait(false)).Check == HashCheck.TryLater)
+                    return Outcome.NothingToDo;
             }
 
             LogPlan(path, plan, options.DryRun);
@@ -348,6 +366,35 @@ namespace Emby.AudioRemover
         /// SubRemover's temporary file next to the video, still being written: it's rewriting that video at this moment.
         /// One left behind by a crash stops being written to, so it doesn't block the video for good.
         /// </summary>
+        /// <summary>
+        /// Not yet rewritten by AudioRemover (no backup of it) or SubRemover (no backup beside it): its hash is still the
+        /// one subtitle sites know.
+        /// </summary>
+        private static bool IsOriginal(string path, AudioRemoverState state) =>
+            !state.Backups.Any(b => string.Equals(b.OriginalPath, path, StringComparison.OrdinalIgnoreCase))
+            && !File.Exists(path + ".subremover.bak");
+
+        private static readonly HashSet<string> SubtitleExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ".srt", ".ass", ".ssa", ".sub", ".vtt", ".smi", ".sup"
+        };
+
+        /// <summary>Languages of the subtitle files next to the video ("Movie.en.srt", "Movie.eng.forced.srt").</summary>
+        internal static IEnumerable<string> SubtitleFileLanguages(string videoPath)
+        {
+            var dir = Path.GetDirectoryName(videoPath);
+            var name = Path.GetFileNameWithoutExtension(videoPath);
+            if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir)) yield break;
+            foreach (var file in Directory.EnumerateFiles(dir, name + ".*"))
+            {
+                if (!SubtitleExtensions.Contains(Path.GetExtension(file))) continue;
+                var stem = Path.GetFileNameWithoutExtension(file);
+                if (stem.Length <= name.Length) continue;
+                var language = stem.Substring(name.Length + 1).Split('.').Where(Languages.IsKnown).Select(Languages.Normalize).FirstOrDefault();
+                if (language != null) yield return language;
+            }
+        }
+
         internal static bool OtherToolIsWorkingOn(string path, DateTime? nowUtc = null)
         {
             var temp = new FileInfo(path + ".subremover-tmp");
